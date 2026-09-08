@@ -8,7 +8,7 @@
 
 ## 1. Halos Execution Chain — Evidence-Based Reconstruction
 
-The following chain combines documented NVIDIA interfaces with architectural inference. The later stages are intentionally described generically where the accessible documentation does not expose the internal implementation.
+The following chain combines documented NVIDIA interfaces with direct inspection of the accessible Halos 1.3 development package and architectural inference. The later stages are intentionally described generically where the accessible source does not expose the downstream implementation.
 
 ### Stage 1: Perception Input
 
@@ -43,31 +43,31 @@ The following chain combines documented NVIDIA interfaces with architectural inf
 |---|---|---|
 | Role | DOCUMENTED | NVIDIA describes SDM as converting the safety decision into an ATL command |
 | Opcode selection | DOCUMENTED / INFERRED | Exact mapping depends on the documented Halos command set |
-| Serialization | DOCUMENTED | ATL command is represented as a fixed 64-byte packet |
+| Serialization | VERIFIED | Accessible `atl_cmd_pkt.h` defines a packed 64-byte command packet |
 
-**Key property:** SDM turns the safety decision into an execution request representation.
+**Key property:** SDM turns the safety decision into an execution-request representation.
 
-### Stage 5: SDM → ATL / Command Transport — Current PoC Boundary
+### Stage 5: SDM → ATL / PLC Command Transport — Current PoC Boundary
 
 ```
-SDM
-  ↓
+SDM / ATLControl
+      ↓
 SLC SOFTWARE GATE
-  ↓
-ATL / UDP
-  ↓
+      ↓
+ATL / UDP / PLC command socket
+      ↓
 Command Receiver
 ```
 
 **Status:** PROPOSED — Equinibrium software PoC insertion point.
 
-This is a clean experimental location because the command representation is available before receiver ingress and the packet can be forwarded byte-for-byte or withheld.
+Direct source inspection confirms that `ATLControl.cpp` constructs the command packet, records pending ACK state, and sends it through a configured PLC command socket using UDP. This makes the boundary a practical PoC insertion point, but it does not make the transport itself the final execution boundary.
 
 ### Critical correction: packet digest is not the authority primitive
 
 An earlier formulation used `SHA-256(packet)` as part of the authority decision. That is **not** the production GIE model.
 
-The packet contains dynamic transport/protocol fields such as sequence/timing information and integrity data. A digest of the complete packet therefore identifies an individual packet instance, not a stable execution-authority context for a continuous stream.
+The 64-byte packet contains dynamic transport/protocol fields such as sequence/timing information and CRC. A digest of the complete packet therefore identifies an individual packet instance, not a stable execution-authority context for a continuous stream.
 
 The production authority model should instead bind authority to a trusted execution context, such as:
 
@@ -87,35 +87,55 @@ Trusted Commit Context
 
 A packet can carry or represent this context, but a software-supplied packet hash alone is not a sufficient trust anchor.
 
-### Stage 6: ATL Command Receiver
+### Stage 6: ATL Command Receiver — Validated Command Acceptance / Software Safety-State Boundary
 
 | Aspect | Status | Evidence |
 |---|---|---|
-| Role | DOCUMENTED | NVIDIA documentation describes the command receiver / UDP listener |
-| Packet validation | DOCUMENTED | CRC, sequence/freshness and related command validity checks are documented |
-| Internal implementation | INFERRED | Exact downstream code path is not claimed without restricted source access |
+| Role | VERIFIED | Direct inspection of accessible `cmd_rx.cpp` |
+| Packet-size validation | VERIFIED | Receiver rejects packets that are not exactly `COMMAND_PACKET_SIZE` |
+| Expected-sender validation | VERIFIED | Receiver checks the configured SDM sender endpoint |
+| Identifier validation | VERIFIED | Receiver validates the ATL packet identifier |
+| CRC validation | VERIFIED | Receiver validates the packet CRC |
+| Command whitelist | VERIFIED | Receiver accepts only supported command values |
+| Software safe-state handling | VERIFIED | Receiver maintains safe-release prompt/latch state for relevant commands |
+| ACK generation | VERIFIED | Receiver constructs and sends a validated ACK packet |
+| VST relay | VERIFIED | Decision commands may be relayed separately for display/visualization |
 
-**Key property:** Receiver-side validation is independent of the proposed SLC authority decision.
+**Key property:** `cmd_rx.cpp` is a **validated command-acceptance and software safety-state boundary**. It is **not established by the inspected source as the physical or architectural execution boundary**.
 
-### Stage 7: Command Interpretation / Execution Logic
+The receiver's `console_latched_` and `safe_release_prompt_ready_` variables are receiver-side software state. They support indication/release handling; they are not established as hardware actuator-enable primitives.
 
-**Status:** INFERRED.
+### Stage 7: Downstream PLC / Controller / Execution Layer
 
-The validated command must ultimately be interpreted by execution logic. The exact internal representation of this stage is not asserted as a specific Halos state machine or register write without direct source evidence.
+**Status:** INFERRED — exact implementation not exposed by the inspected examples.
+
+The accessible source confirms a PLC command path and receiver-side command handling, but does not expose a concrete PLC driver, actuator write, GPIO operation, direct hardware-register update, motor-control primitive, or equivalent physical execution implementation in the inspected example scope.
+
+Therefore the correct evidence-based representation is:
+
+```
+validated command acceptance
+        ↓
+[downstream PLC / controller / execution implementation]
+        ↓
+architectural / physical effect
+```
+
+The bracketed layer is intentionally not assigned a specific NVIDIA implementation without additional evidence.
 
 ### Stage 8: Architectural Effect / Commit Boundary
 
 **Status:** INFERRED as the architectural concept; exact Halos implementation is not independently verified.
 
-The relevant security boundary is the earliest point at which the requested execution effect becomes architecturally effective — for example, a protected state transition, control-state update, transaction commit, instruction retirement, or protected register update.
+The relevant security boundary is the earliest point at which the requested execution effect becomes architecturally effective — for example, a protected state transition, control-state update, transaction commit, instruction retirement, protected register update, or equivalent commit point.
 
-This is **Candidate D**.
+This is **Candidate D** and is the proposed production GIE enforcement boundary.
 
 ### Stage 9: Physical Effect
 
 **Status:** INFERRED / system-dependent.
 
-Physical actuation occurs downstream of the architectural effect. It is too late for the primary governance commit boundary because the protected system state may already have changed.
+Physical actuation occurs downstream of the architectural effect. It is too late for the primary governance commit boundary because protected system state may already have changed. A secondary physical interlock may be appropriate in a particular safety architecture, but it does not replace the primary GIE commit boundary.
 
 ---
 
@@ -127,7 +147,7 @@ Physical actuation occurs downstream of the architectural effect. It is too late
 
 Too early. The gate would operate before the authoritative Halos safety decision and would either duplicate safety reasoning or interfere with perception/safety semantics.
 
-### Candidate B — SDM → ATL
+### Candidate B — SDM → ATL / Command Transport
 
 **Verdict: GOOD PoC, NOT FINAL GIE BOUNDARY.**
 
@@ -135,9 +155,14 @@ What it protects:
 - packet transmission;
 - software-level authority admission.
 
+What direct source evidence supports:
+- SDM/ATLControl creates the command packet;
+- the command is sent through the configured PLC command socket;
+- the receiver validates and interprets the command.
+
 What it demonstrates:
 - authority can be evaluated independently of Halos safety;
-- governance revocation can prevent a command from reaching the receiver;
+- governance revocation can prevent a command from being transmitted;
 - byte-for-byte packet preservation is possible.
 
 What it cannot guarantee:
@@ -149,7 +174,7 @@ What it cannot guarantee:
 
 **Verdict: BETTER, BUT NOT FINAL.**
 
-This is closer to execution semantics and can block a validated command before dispatch. However, it remains upstream of the architectural commit point and therefore does not provide the strongest enforcement property.
+This is closer to execution semantics and can block a validated command before downstream execution. However, the accessible examples do not expose the downstream execution primitive, so Candidate C cannot be claimed as the verified physical or architectural boundary.
 
 ### Candidate D — Earliest Hardware-Protected Architectural Commit
 
@@ -181,7 +206,7 @@ Too late. Architectural state may already have changed. A secondary actuation in
 
 ---
 
-## 3. Safety vs Authority vs Architectural Effect
+## 3. Safety vs Authority vs Command Acceptance vs Architectural Effect
 
 These are distinct properties:
 
@@ -192,6 +217,10 @@ These are distinct properties:
 ### Authority Decision — SLC / Governance
 
 > **Is this execution request currently authorized in the governance context?**
+
+### Command Acceptance — Halos reference implementation
+
+> **Is this received command structurally valid and from the expected sender, and what software safety state should the receiver maintain?**
 
 ### Architectural Commit — GIE
 
@@ -211,11 +240,37 @@ Architectural Effect may commit
 
 If Halos is restrictive, the safety path must prevent the unsafe action according to Halos policy. If Halos remains permissive but governance authority is revoked, GIE must still be able to block the architectural effect.
 
+**Command acceptance is neither safety authorization nor execution authority.** A structurally valid packet may be accepted by the receiver while the corresponding execution request is still unauthorized under the GIE governance context.
+
 This orthogonality is central to the architecture.
 
 ---
 
-## 4. What the Current PoC Proves
+## 4. Safe-State and Safe-Release Are Not the GIE Boundary
+
+The Halos source contains explicit safe-state and safe-release behavior on both sides of the command path.
+
+The receiver maintains software variables including `console_latched_` and `safe_release_prompt_ready_`. It also accepts an operator/script `release` action through stdin/FIFO and can issue a safe-release request to the last known sender.
+
+The SDM-side control logic contains PLC-authoritative safe-release handling and repeats restrictive commands while the safe-state condition remains latched.
+
+These mechanisms are important for the safety lifecycle, but they do **not** establish a hardware-enforced execution authority boundary.
+
+The correct distinction is:
+
+```
+Safe-state latch / release
+        ≠
+Execution authority
+        ≠
+GIE architectural commit gate
+```
+
+Therefore a software safe-state latch must not be presented as the GIE primitive, and an operator release action must not be treated as equivalent to hardware authorization of an architectural commit.
+
+---
+
+## 5. What the Current PoC Proves
 
 ### PoC
 
@@ -230,18 +285,21 @@ The PoC can demonstrate:
 3. A governance epoch change can invalidate a previously authorized context.
 4. The software gate can block forwarding.
 5. A forwarded packet can remain byte-for-byte unchanged.
+6. Receiver-side validation still operates normally on admitted packets.
 
 ### What it does NOT prove
 
 It does not prove that a downstream component cannot transform or execute an already-admitted request in an unauthorized way.
 
+It does not prove the location of the final NVIDIA architectural commit primitive, because that implementation is not exposed in the inspected source.
+
 Therefore:
 
-> **The software SLC gate is a proof-of-concept authority boundary; the hardware GIE Commit Gate is the production enforcement boundary.**
+> **The software SLC gate is a proof-of-concept authority boundary; the hardware GIE Commit Gate is the proposed production enforcement boundary.**
 
 ---
 
-## 5. Authority Binding Model
+## 6. Authority Binding Model
 
 ### Do not bind authority to an exact packet digest
 
@@ -267,7 +325,7 @@ Likewise, a software-provided `execution_id` is not automatically a trust anchor
 
 ---
 
-## 6. Governance Epoch and Revocation
+## 7. Governance Epoch and Revocation
 
 The conceptual rule is:
 
@@ -283,7 +341,7 @@ This enables the important case:
 
 ```
 Halos: PERMISSIVE
-Packet: valid
+Packet: structurally valid
 Receiver: accepts
 Authority: stale/revoked
         ↓
@@ -292,9 +350,11 @@ GIE: BLOCK
 No protected architectural effect
 ```
 
+The receiver's acceptance of the packet does not override the protected governance state.
+
 ---
 
-## 7. GIE Commit Semantics
+## 8. GIE Commit Semantics
 
 GIE is defined by a security property, not by a single circuit topology.
 
@@ -322,9 +382,13 @@ Commit Request
 
 Atomicity is a required architectural property: the authorization decision and the protected effect must correspond to a consistent governance/execution context. An implementation may use atomic snapshots, transactional semantics, serialized commit paths, gated updates, or equivalent mechanisms. A literal lock is not mandatory.
 
+### Core invariant
+
+> **A protected execution effect cannot become architecturally effective solely because an upstream component produced a valid command or because the action was judged safe.**
+
 ---
 
-## 8. Bypass Resistance
+## 9. Bypass Resistance
 
 A production GIE should provide the following properties:
 
@@ -344,7 +408,7 @@ Core invariant:
 
 ---
 
-## 9. Experimental Validation
+## 10. Experimental Validation
 
 ### Experiment 1 — Authority Revocation
 
@@ -377,11 +441,11 @@ The resulting evidence demonstrates that safety and execution authority are inde
 
 ---
 
-## 10. Trusted Boundary Model
+## 11. Trusted Boundary Model
 
 ### Above GIE
 
-Perception, SAIM/PCM, SEI, SDM, ATL/transport, receiver and execution logic are upstream of the final hardware enforcement boundary.
+Perception, SAIM/PCM, SEI, SDM, ATL/transport, receiver and downstream execution logic are upstream of the final hardware enforcement boundary.
 
 They may determine the requested execution effect, but they cannot unilaterally force the protected effect once GIE is correctly implemented.
 
@@ -393,15 +457,15 @@ The hardware gate evaluates the trusted execution/governance context and authori
 
 The protected architectural effect and its downstream system-specific consequences are affected by the gate.
 
-The exact downstream chain — state registers, control logic, drivers, actuation — is architecture-specific and should not be presented as verified Halos implementation without source evidence.
+The exact downstream chain — PLC state, controller state, drivers, actuation — is architecture-specific and should not be presented as verified Halos implementation without source evidence.
 
 ---
 
-## 11. Practical Implementation Constraints
+## 12. Practical Implementation Constraints
 
 ### Source access
 
-The currently accessible NVIDIA material documents the interfaces and command path but does not expose all internal Halos implementation sources. Restricted development packages may contain additional source required to identify the exact internal commit primitive.
+The currently accessible NVIDIA material documents the interfaces and command path and exposes portions of the reference implementation, but it does not expose all downstream Halos/PLC implementation sources. Additional restricted source may be required to identify the exact internal commit primitive.
 
 Therefore, the current analysis should not claim that the GIE can simply be inserted into a specific Halos internal state-register write.
 
@@ -417,7 +481,30 @@ No gate-area, transistor-count or latency estimate should be treated as establis
 
 ---
 
-## 12. Final Architectural Conclusion
+## 13. Evidence Classification Matrix
+
+| Claim | Classification |
+|---|---|
+| Halos exposes PERMISSIVE / RESTRICTIVE safety semantics | DOCUMENTED |
+| `atl_cmd_pkt.h` defines the 64-byte command packet | VERIFIED |
+| MUTE means “Allow Operation” and UNMUTE means “Prevent Operation” in the inspected header | VERIFIED |
+| Packet CRC provides integrity checking | VERIFIED |
+| SDM/ATLControl sends commands through a configured PLC UDP socket | VERIFIED |
+| `cmd_rx.cpp` validates size, sender, identifier, CRC and supported commands | VERIFIED |
+| `cmd_rx.cpp` manages software safe-state/release state and ACKs | VERIFIED |
+| VST relay is secondary to command handling | VERIFIED |
+| Inspected examples do not expose a concrete actuator/GPIO/register/PLC-driver implementation | VERIFIED within inspected source scope |
+| Receiver is a command-acceptance/software-state boundary | INFERRED from direct source inspection |
+| Exact downstream physical execution primitive | NOT ESTABLISHED |
+| SDM→ATL/UDP as software PoC insertion point | PROPOSED |
+| Architectural commit as production GIE boundary | PROPOSED architectural conclusion |
+| Exact internal Halos commit mechanism | NOT ESTABLISHED |
+
+This matrix is intended to prevent accidental promotion of architectural inference into source-verified fact.
+
+---
+
+## 14. Final Architectural Conclusion
 
 The evidence supports a clear distinction:
 
@@ -427,7 +514,7 @@ The evidence supports a clear distinction:
 SDM → SLC Software Gate → ATL/UDP → Receiver
 ```
 
-Useful for demonstrating governance authority and revocation, but limited to software/transport enforcement.
+Useful for demonstrating governance authority and revocation, but limited to software/transport enforcement and command acceptance.
 
 **Production boundary:**
 
@@ -448,3 +535,7 @@ The central distinction is:
 > **SLC answers: “Is this execution request semantically and contextually authorized?”**
 >
 > **GIE enforces: “Can this execution effect become system state?”**
+
+And the critical evidence-based qualification is:
+
+> **The accessible Halos 1.3 source establishes a validated command-acceptance/software safety-state boundary and a downstream PLC command path, but does not expose the final physical or architectural execution primitive. Therefore the GIE production boundary remains a proposed architectural boundary, not a claimed NVIDIA implementation fact.**
