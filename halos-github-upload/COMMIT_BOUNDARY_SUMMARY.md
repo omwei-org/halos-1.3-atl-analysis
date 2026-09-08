@@ -2,24 +2,32 @@
 
 ## Key Finding
 
-**The natural GIE Commit Gate location is at the architectural state transition boundary (Candidate D):**
+**The natural production GIE Commit Gate location is the architectural commit boundary (Candidate D): the earliest hardware-protected boundary at which the requested execution effect becomes architecturally effective.**
+
+The exact physical realization is architecture-dependent. It may be a state transition, control-state update, transaction commit, instruction retirement, protected register update, or equivalent commit point. The analysis must not assume a specific Halos state-register implementation unless independently verified.
 
 ```
-Safety Function (Halos)
-         ↓
-    State Write Request
-         ↓
-    ╔═══════════════════╗
-    ║  GIE Gate (HW)    ║
-    ║  Check:           ║
-    ║  • Epoch match    ║
-    ║  • Authority OK   ║
-    ║  • Context OK     ║
-    ╚═══════════════════╝
-         ↓
-    COMMIT / BLOCK
-         ↓
-    State Register
+Halos Safety Path
+        ↓
+Execution Request
+        ↓
+SLC / Governance Context
+        ↓
+Execution / Safety Logic
+        ↓
+╔══════════════════════════════════════╗
+║      GIE COMMIT GATE (HW)            ║
+║                                      ║
+║  Check current governance context    ║
+║  Check execution binding             ║
+║  Check governance epoch / validity   ║
+║  Check authority / revocation        ║
+║  Check transition / commit validity  ║
+╚══════════════════════════════════════╝
+        ↓
+COMMIT / BLOCK
+        ↓
+Architectural Effect
 ```
 
 ---
@@ -28,224 +36,143 @@ Safety Function (Halos)
 
 | # | Candidate | Location | Verdict | Reason |
 |---|-----------|----------|---------|--------|
-| A | Pre-SEI | Before safety decision | ❌ REJECT | Gate re-implements SEI; needs new processor |
-| B | SDM→ATL | Packet transmission (current PoC) | ✓ GOOD PoC | Proves concept; but premature for hardware |
-| C | Receiver→Execute | Before command dispatch | ✓ BETTER | Closer to effect; but not at commit point |
-| D | Architectural Commit | State write boundary | ✓✓✓ OPTIMAL | All info available; hardware-natural; bypass-resistant |
-| E | Actuation | Physical output | ❌ REJECT | Too late; state already committed |
+| A | Pre-SEI | Before safety decision | ❌ REJECT | Too early; overlaps safety reasoning |
+| B | SDM→ATL | Packet transmission | ✓ GOOD PoC | Demonstrates governance gating, but protects transport rather than final effect |
+| C | Receiver→Execute | Before execution dispatch | ✓ BETTER | Closer to execution, but still upstream of architectural effect |
+| D | Architectural Commit | Earliest protected commit boundary | ✓✓✓ OPTIMAL | Protects the execution effect itself; strongest bypass resistance |
+| E | Actuation | Physical output | ❌ PRIMARY REJECT | Too late; architectural state may already have changed |
 
 ---
 
 ## Why Candidate D Wins
 
-### 1. Information Availability
-At state write, all necessary context is present:
-- Source state (current)
-- Destination state (requested)
-- Governance epoch
-- Authority record
-- Command semantics
+### 1. It protects the right object
 
-### 2. Bypass Resistance
-If attacker compromises software above D:
-- ❌ Cannot force state write (hardware gate enforces)
-- ❌ Cannot bypass authority check
-- ❌ Can request transition, but cannot make it effective
+The fundamental protected object is **the requested execution effect**, not the UDP packet. A packet is only one representation of execution intent.
 
-### 3. No Halos Modification
-- Halos SEI/SDM logic is untouched
-- Safety decision remains authoritative
-- Gate is orthogonal enforcement layer
+### 2. It is independent of Halos safety reasoning
 
-### 4. Atomic Transitions
-- Either full state transition commits (with valid authority)
-- Or no state change occurs
-- No partial states possible
+Halos answers whether an action is considered safe. GIE answers whether the requested execution effect is currently authorized under governance state. These are orthogonal properties.
 
-### 5. Hardware Feasible
-- Integrates into SoC state machine logic
-- No separate processor needed
-- Straightforward: observe write request → check authority → allow/block
+### 3. It is bypass-resistant
+
+A compromised component above the gate may generate or request an unauthorized execution effect, but cannot make the protected architectural effect effective without passing the hardware gate.
+
+### 4. It supports revocation
+
+A previously valid request can become unauthorized after a governance epoch or authority change. The commit decision is evaluated against the current protected governance context rather than relying on an old packet-level decision.
+
+### 5. It does not require a new processor
+
+The GIE primitive is a protected authorization/commit mechanism integrated into the existing SoC or safety-control path. The exact implementation is architecture-specific.
+
+---
+
+## Critical Correction: No Exact Packet-Digest Authority Binding
+
+The previous PoC formulation used `SHA-256(packet)` as part of the authority decision. This is **not the production GIE binding model**.
+
+The 64-byte Halos packet contains dynamic fields such as sequence/timing information and CRC. Binding authority to the exact digest of every packet is therefore unsuitable as a stable authority primitive for a continuous command stream.
+
+The preferred model is to bind authority to a **trusted execution context**, for example:
+
+```
+Semantic Identity
+      +
+Execution Context
+      +
+Governance Epoch
+      +
+Authority Context
+      +
+Commit Intent
+      ↓
+Trusted Commit Context
+```
+
+A packet may carry or represent this information, but the production GIE trust anchor must not depend on a software-supplied packet hash alone.
+
+---
+
+## PoC vs. Production
+
+### PoC — Candidate B
+
+```
+SDM → SLC Software Gate → ATL/UDP → Receiver
+```
+
+The PoC demonstrates:
+- governance authority can be evaluated independently of Halos safety;
+- authority revocation can prevent a command from being transmitted;
+- the original packet can be preserved byte-for-byte;
+- epoch-based policy can be demonstrated in software.
+
+It does **not** demonstrate that an already-admitted command cannot later produce an unauthorized architectural effect.
+
+### Production — Candidate D
+
+```
+Execution Request → GIE Commit Gate → Architectural Effect
+```
+
+The production architecture provides the actual hardware enforcement boundary: an unauthorized execution effect cannot become architecturally effective solely because an upstream software component produced a valid command.
+
+**Relationship:** the PoC validates the governance concept; the hardware GIE validates enforcement at the protected commit boundary.
 
 ---
 
 ## Three Distinct Concepts
 
-### Safety Decision (Halos)
-> Is this action safe?
-- Owner: SEI
-- Decides: PERMISSIVE or RESTRICTIVE
-- Gate location: SEI itself
+### Safety Decision — Halos
 
-### Authority Decision (Equinibrium)
-> Is this action authorized?
-- Owner: GIE gate
-- Decides: AUTHORIZED or REVOKED
-- Gate location: Commit boundary (D)
+> Is this action considered safe?
 
-### Result
+Owner: Halos safety logic / SEI.
+
+### Authority Decision — Equinibrium
+
+> Is this execution request currently authorized in the governance context?
+
+Owner: SLC/GIE governance architecture.
+
+### Architectural Commit — GIE
+
+> Can this requested execution effect become system state?
+
+Owner: GIE hardware enforcement.
+
+A useful conceptual condition is:
+
 ```
-Halos: PERMISSIVE + Equinibrium: AUTHORIZED → Transition commits
-Halos: PERMISSIVE + Equinibrium: REVOKED   → Transition blocked at gate
-Halos: RESTRICTIVE + Equinibrium: ANY     → Never reaches gate (SEI blocks)
+Halos Safety = PERMISSIVE
+        AND
+GIE Authority = AUTHORIZED
+        AND
+Commit Context = VALID
+        ↓
+Architectural Effect may commit
 ```
 
-Both gates must pass. Orthogonal enforcement.
+If authority is revoked or the commit context is invalid, GIE blocks the protected effect even when the upstream Halos decision remains permissive.
 
 ---
 
-## Current PoC vs. Hardware Implementation
+## Evidence Discipline
 
-### PoC (Candidate B: SDM→ATL)
-```
-Proves:
-✓ Authority gating mechanism works
-✓ Governance revocation blocks packet
-✓ Halos remains independent
+- **VERIFIED** — directly confirmed from accessible NVIDIA source/package material.
+- **DOCUMENTED** — stated in NVIDIA documentation.
+- **INFERRED** — reconstructed from documented interfaces and execution logic.
+- **PROPOSED** — Equinibrium architecture.
 
-Does NOT prove:
-❌ Already-admitted command cannot transition to unauthorized state
-❌ Hardware gate at D is necessary
-❌ Full protection against software compromise
-```
-
-### Hardware Gate (Candidate D)
-```
-Proves everything PoC proves, PLUS:
-✓ Even accepted command cannot become effective if authority revoked
-✓ State write is prevented at hardware level
-✓ Software compromise is insufficient to bypass gate
-✓ Atomic transitions with authority verification
-```
-
-**Relationship:** PoC validates the **concept**. Hardware gate validates the **implementation**.
+Candidate B is a **PROPOSED software PoC insertion point**. Candidate D is a **PROPOSED production GIE enforcement boundary** based on architectural reasoning. The exact internal Halos commit primitive remains **INFERRED** unless source access independently verifies it.
 
 ---
 
-## Trusted Computing Boundary
+## Final Conclusion
 
-### Above Gate (Software, not protected):
-- Perception input
-- SAIM/PCM fusion
-- SEI safety logic
-- SDM command generation
-- ATL packet transport
-- Receiver parsing
-- Safety function pre-commit logic
+The strongest and most defensible architecture is:
 
-**Trust model:** Determines WHAT to transition and WHETHER it's safe.
+> **SLC provides semantic and governance authorization; GIE enforces that authorization at the earliest hardware-protected boundary at which the requested execution effect becomes architecturally effective.**
 
-### At Gate (Hardware, protected):
-- Authority check (epoch match)
-- Context validation
-- TTL verification
-- Governance flags
-
-**Trust model:** Determines WHETHER to actually commit.
-
-### Below Gate (Hardware, effected):
-- State register write
-- Actuation drivers
-- Physical output
-
-**Protection:** Gate prevents unauthorized write → no unauthorized state → no unauthorized actuation.
-
----
-
-## Three Experiments (Proof)
-
-### Experiment 1: Authority Revocation at Gate
-```
-T0: Valid command, authority OK → Motor disables ✓
-T1: Governance epoch advances (revokes authority)
-T1+: Same command replayed
-    • Halos: still permissive (unchanged safety logic)
-    • Packet: still valid (CRC, sequence OK)
-    • GIE gate: EPOCH_MISMATCH → BLOCK ✓
-    • Result: Motor stays disabled (old state unchanged)
-
-Proves: Gate at D is the right location (after receiver accepts but before state commits)
-```
-
-### Experiment 2: Atomic State Commit
-```
-Transition request: LATCHED → RELEASING (3 internal operations)
-- With GIE gate: Gate observes complete destination state
-  • Either all 3 operations commit atomically (with valid authority)
-  • Or none commit (authority invalid)
-  • No partial states
-
-Proves: D ensures atomicity + authority verification
-```
-
-### Experiment 3: Authority ≠ Safety
-```
-Scenario A - Safety block:
-    SEI: RESTRICTIVE → SDM: CMD_MUTE → Motor disabled
-    Reason: Safety decision
-
-Scenario B - Authority block:
-    SEI: PERMISSIVE → SDM: CMD_UNMUTE
-    GIE gate: EPOCH_MISMATCH → BLOCK
-    Motor stays disabled
-    Reason: Authority, not safety
-
-Proves: A and B are orthogonal; GIE gate is independent enforcement
-```
-
----
-
-## Final Architecture
-
-```
-Halos (Safety)                Equinibrium (Authority)
-├─ SIPP (perception)
-├─ SAIM/PCM (fusion)
-├─ SEI (safety decision)
-├─ SDM (command gen)
-├─ ATL (transport)
-├─ Receiver (parse)
-├─ Safety Function
-│    ↓
-│ [Request state transition]
-│    ↓
-│ ╔═══════════════════════╗
-│ ║ GIE COMMIT GATE (HW)  ║ ← Equinibrium enforcement
-│ ║                       ║
-│ ║ Check epoch match     ║
-│ ║ Check authority TTL   ║
-│ ║ Check governance      ║
-│ ║ Check context         ║
-│ ║                       ║
-│ ║ COMMIT / BLOCK        ║
-│ ╚═══════════════════════╝
-│    ↓
-├─ State register (architectural)
-├─ Actuation drivers
-└─ Physical output
-```
-
-**Properties:**
-1. Halos is untouched (still owns safety decision)
-2. Equinibrium gate is independent (owns authority decision)
-3. Both gates must pass for state transition to execute
-4. Gate location is at maximum protection point (state write)
-5. No new processor needed
-6. Hardware-implementable (SoC state machine control logic)
-
----
-
-## Conclusion
-
-The **GIE Commit Gate should sit at the architectural state transition boundary**, specifically where Safety Function requests a state machine state register write and before that write becomes observable.
-
-This location provides:
-- ✓ Complete protection against unauthorized state transitions
-- ✓ Independence from Halos safety logic
-- ✓ Bypass resistance against software compromise
-- ✓ Atomic, verified state commits
-- ✓ Hardware feasibility without new processor
-- ✓ Alignment with Equinibrium SIF architecture
-
-The current software PoC (Candidate B) validates the concept and will guide early integration. The hardware gate (Candidate D) provides the production implementation.
-
+The SDM→ATL boundary remains valuable for PoC integration, but it must not be presented as the final GIE enforcement point.
