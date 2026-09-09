@@ -22,6 +22,14 @@ def run_commit(gie: GIE, gate: CommitGate, actuator: MockActuator, action: torch
     evidence = make_execution_evidence(0, action, epoch)
     authority = gie.check_evidence(evidence, action)
     safety = SafetyResult(SafetyDecision.ALLOW, "safe", evidence.action_digest)
+
+    # TOCTOU defense: authority is re-read immediately before the execution gate.
+    authority = gie.revalidate(
+        env_id=evidence.env_id,
+        authority=authority,
+        action=action,
+        execution_digest=evidence.action_digest,
+    )
     result = gate.commit(evidence.action_digest, authority, safety)
 
     if result.decision is Decision.ALLOW:
@@ -83,6 +91,12 @@ def test_cached_action_from_old_epoch_cannot_cross_commit_boundary_after_reautho
 
     authority = gie.check_evidence(stale_evidence, cached_action)
     safety = SafetyResult(SafetyDecision.ALLOW, "safe", stale_evidence.action_digest)
+    authority = gie.revalidate(
+        env_id=0,
+        authority=authority,
+        action=cached_action,
+        execution_digest=stale_evidence.action_digest,
+    )
     result = gate.commit(stale_evidence.action_digest, authority, safety)
 
     assert result.decision is Decision.BLOCK
