@@ -1,0 +1,13 @@
+services:
+  magic-box:
+    build:
+      context: ..
+      dockerfile: runtime/Dockerfile
+    ports:
+      - "8080:8080"
+    restart: unless-stopped
+    environment:
+      MAGIC_BOX_HOST: 0.0.0.0
+      MAGIC_BOX_PORT: 8080
+    # Host-specific GPIO/CAN/serial device mappings belong here.
+    # The governance runtime itself remains hardware-agnostic.
