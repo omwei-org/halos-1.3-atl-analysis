@@ -8,9 +8,9 @@ import socket
 class UnixSocketActuator:
     """Magic Box actuator that forwards an already-committed payload to host I/O.
 
-    The transport is deliberately unaware of authority and safety. The payload
-    is forwarded byte-for-byte; governance has already completed before apply()
-    is called.
+    The transport carries only an opaque payload. It makes no allow/deny
+    decision of its own; the decision was already final before apply() is
+    called, and this adapter forwards the resulting bytes byte-for-byte.
     """
 
     def __init__(self, socket_path: str, timeout: float = 2.0) -> None:

@@ -14,10 +14,12 @@ class RecordingHost:
     def __init__(self, path: str) -> None:
         self.path = path
         self.received: list[bytes] = []
+        self.ready = threading.Event()
         self.thread = threading.Thread(target=self.serve_once, daemon=True)
 
     def start(self) -> None:
         self.thread.start()
+        self.ready.wait(timeout=1)
 
     def join(self) -> None:
         self.thread.join(timeout=1)
@@ -26,6 +28,7 @@ class RecordingHost:
         with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as server:
             server.bind(self.path)
             server.listen(8)
+            self.ready.set()
             while len(self.received) < 1:
                 connection, _ = server.accept()
                 with connection:
@@ -64,4 +67,4 @@ def test_magic_box_block_does_not_cross_socket(tmp_path) -> None:
 
     assert result["decision"] == "BLOCK"
     assert result["applied"] is False
-    assert result["reason"] in {"authority_block", "execution_epoch_mismatch"}
+    assert result["reason"] in {"authority_revoked", "execution_epoch_mismatch"}
