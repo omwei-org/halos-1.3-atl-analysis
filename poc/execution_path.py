@@ -4,6 +4,7 @@ from dataclasses import dataclass
 
 from poc.atl_boundary import ATLCommitBoundary
 from poc.commit_gate import CommitGate, SafetyDecision
+from poc.execution_identity import digest_bytes
 from poc.gie import CheckResult, Decision, ExecutionEvidence, GIE, make_bytes_execution_evidence
 from poc.halos_adapter import HalosAdapter
 from poc.sdm_boundary import SDMCommand, SDMCommitAdapter
@@ -60,6 +61,18 @@ class GovernedExecutionPath:
         halos_reason: str = "halos_safe",
     ) -> ExecutionPathResult:
         """Run the canonical path and return the exact SDM packet on ALLOW."""
+        # The command must belong to the execution environment represented by
+        # this path. Do not let a lower boundary discover this mismatch after
+        # authority has already been resolved for a different environment.
+        if command.env_id != self._env_id:
+            return ExecutionPathResult(
+                decision=Decision.BLOCK,
+                reason="execution_env_mismatch",
+                packet=None,
+                action_digest=digest_bytes(command.packet),
+                execution_epoch=command.governance_epoch,
+            )
+
         evidence, authority = self.prepare_authority(command)
         safety = HalosAdapter.bind(
             action_digest=evidence.action_digest,
