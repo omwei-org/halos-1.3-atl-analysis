@@ -72,7 +72,12 @@ class ATLCommitBoundary:
                 execution.governance_epoch,
             )
 
-        decision = self._commit_gate.commit(execution.packet_digest, authority, safety)
+        decision = self._commit_gate.commit(
+            env_id=authority.env_id,
+            action_digest=execution.packet_digest,
+            authority=authority,
+            safety=safety,
+        )
         if decision.decision is Decision.BLOCK:
             return ATLCommitResult(
                 Decision.BLOCK,
