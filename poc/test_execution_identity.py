@@ -1,5 +1,3 @@
-import torch
-
 from poc.execution_identity import BytesExecutionObject, digest_bytes, identify
 
 
@@ -31,5 +29,8 @@ def test_changed_execution_bytes_change_identity():
 
 
 def test_execution_identity_is_not_tensor_specific():
-    action = torch.tensor([0.1, 0.2, 0.3])
-    assert not hasattr(action, "canonical_bytes")
+    class TensorLike:
+        pass
+
+    obj = TensorLike()
+    assert not hasattr(obj, "canonical_bytes")
