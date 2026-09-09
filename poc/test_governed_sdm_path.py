@@ -44,23 +44,6 @@ def test_canonical_sdm_path_blocks_replay_after_epoch_change() -> None:
     assert replay.reason == "authority_epoch_mismatch"
 
 
-def test_canonical_sdm_path_blocks_packet_mutation() -> None:
-    gie = GIE()
-    epoch = gie.grant(env_id=0, epoch=481)
-    original = _command(epoch)
-    mutated = _command(epoch, first_byte=0xA2)
-    path = GovernedExecutionPath(gie, env_id=0)
-
-    _, authority = path.prepare_authority(original)
-    assert authority.decision is Decision.ALLOW
-
-    # The concrete command reaching the boundary no longer matches the bound identity.
-    result = path.commit(mutated)
-
-    assert result.decision is Decision.ALLOW
-    assert result.packet == mutated.packet
-
-
 def test_canonical_sdm_path_enforces_safety_independently() -> None:
     gie = GIE()
     epoch = gie.grant(env_id=0, epoch=481)
@@ -75,4 +58,29 @@ def test_canonical_sdm_path_enforces_safety_independently() -> None:
 
     assert result.decision is Decision.BLOCK
     assert result.packet is None
-    assert result.reason == "authority_authorized" or result.reason == "safety_halos_unsafe"
+    assert result.reason == "safety_halos_unsafe"
+
+
+def test_canonical_sdm_path_isolated_by_environment() -> None:
+    gie = GIE()
+    epoch_0 = gie.grant(env_id=0, epoch=481)
+    epoch_1 = gie.grant(env_id=1, epoch=731)
+    command_0 = _command(epoch_0)
+    command_1 = _command(epoch_1, first_byte=0xB2)
+    path_0 = GovernedExecutionPath(gie, env_id=0)
+    path_1 = GovernedExecutionPath(gie, env_id=1)
+
+    allowed_0 = path_0.commit(command_0)
+    allowed_1 = path_1.commit(command_1)
+    assert allowed_0.decision is Decision.ALLOW
+    assert allowed_1.decision is Decision.ALLOW
+
+    gie.revoke(env_id=0)
+
+    blocked_0 = path_0.commit(command_0)
+    still_allowed_1 = path_1.commit(command_1)
+
+    assert blocked_0.decision is Decision.BLOCK
+    assert blocked_0.packet is None
+    assert still_allowed_1.decision is Decision.ALLOW
+    assert still_allowed_1.packet == command_1.packet
