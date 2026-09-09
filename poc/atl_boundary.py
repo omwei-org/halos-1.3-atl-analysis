@@ -64,6 +64,14 @@ class ATLCommitBoundary:
         authority: CheckResult,
         safety: SafetyResult,
     ) -> ATLCommitResult:
+        if authority.action_epoch != execution.governance_epoch:
+            return ATLCommitResult(
+                Decision.BLOCK,
+                "execution_epoch_mismatch",
+                execution.packet_digest,
+                execution.governance_epoch,
+            )
+
         decision = self._commit_gate.commit(execution.packet_digest, authority, safety)
         if decision.decision is Decision.BLOCK:
             return ATLCommitResult(
@@ -89,4 +97,6 @@ class ATLCommitBoundary:
             return None
         if result.packet_digest != execution.packet_digest:
             raise ATLBoundaryError("commit result is not bound to this packet")
+        if result.governance_epoch != execution.governance_epoch:
+            raise ATLBoundaryError("commit result is not bound to this execution epoch")
         return execution.packet
