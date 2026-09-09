@@ -1,9 +1,9 @@
 from __future__ import annotations
 
-from poc.commit_gate import Decision, SafetyDecision
 from poc.atl_boundary import ATLExecutionObject
+from poc.commit_gate import SafetyDecision
 from poc.execution_path import GovernedExecutionPath
-from poc.gie import GIE
+from poc.gie import Decision, GIE
 
 
 class MockATLReceiver:
