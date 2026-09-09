@@ -86,14 +86,16 @@ def test_canonical_sdm_path_isolated_by_environment() -> None:
     assert still_allowed_1.packet == command_1.packet
 
 
-def test_canonical_sdm_path_blocks_cross_environment_authority() -> None:
+def test_canonical_sdm_path_rejects_command_from_different_environment() -> None:
     gie = GIE()
     epoch = gie.grant(env_id=0, epoch=481)
     command = _command(1, epoch)
-    path = GovernedExecutionPath(gie, env_id=1)
+    path = GovernedExecutionPath(gie, env_id=0)
 
     result = path.commit(command)
 
     assert result.decision is Decision.BLOCK
     assert result.packet is None
-    assert result.reason == "no_authority_context"
+    assert result.reason == "execution_env_mismatch"
+    assert result.action_digest
+    assert result.execution_epoch == epoch
