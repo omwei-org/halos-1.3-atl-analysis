@@ -19,7 +19,7 @@ def test_stale_allow_cannot_cross_commit_after_revocation():
 
     final_authority = gie.revalidate(0, checked, action)
     safety = SafetyResult(SafetyDecision.ALLOW, "safe", evidence.action_digest)
-    result = gate.commit(evidence.action_digest, final_authority, safety)
+    result = gate.commit(0, evidence.action_digest, final_authority, safety)
 
     assert final_authority.decision is Decision.BLOCK
     assert final_authority.reason == "revoked"
@@ -42,7 +42,7 @@ def test_stale_allow_cannot_cross_commit_after_epoch_change():
 
     final_authority = gie.revalidate(0, checked, action)
     safety = SafetyResult(SafetyDecision.ALLOW, "safe", evidence.action_digest)
-    result = gate.commit(evidence.action_digest, final_authority, safety)
+    result = gate.commit(0, evidence.action_digest, final_authority, safety)
 
     assert final_authority.decision is Decision.BLOCK
     assert final_authority.reason == "epoch_mismatch"
@@ -60,7 +60,7 @@ def test_final_revalidation_preserves_allow_for_current_authority():
     checked = gie.check_evidence(evidence, action)
     final_authority = gie.revalidate(0, checked, action)
     safety = SafetyResult(SafetyDecision.ALLOW, "safe", evidence.action_digest)
-    result = gate.commit(evidence.action_digest, final_authority, safety)
+    result = gate.commit(0, evidence.action_digest, final_authority, safety)
 
     assert final_authority.decision is Decision.ALLOW
     assert final_authority.authority_epoch == epoch
