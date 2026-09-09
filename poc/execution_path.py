@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from poc.atl_boundary import ATLCommitBoundary, ATLExecutionObject
-from poc.commit_gate import CommitGate, SafetyDecision, SafetyResult
+from poc.commit_gate import CommitGate, SafetyDecision
 from poc.gie import CheckResult, Decision, ExecutionEvidence, GIE, make_bytes_execution_evidence
 from poc.halos_adapter import HalosAdapter
 
@@ -28,10 +28,18 @@ class GovernedExecutionPath:
     Final authority revalidation happens immediately before the Commit Gate.
     """
 
-    def __init__(self, gie: GIE, gate: CommitGate | None = None) -> None:
+    def __init__(self, gie: GIE, env_id: int, gate: CommitGate | None = None) -> None:
+        if env_id < 0:
+            raise ValueError("env_id must be non-negative")
         self._gie = gie
+        self._env_id = env_id
         self._gate = gate or CommitGate()
         self._boundary = ATLCommitBoundary(self._gate)
+
+    @property
+    def env_id(self) -> int:
+        """Environment whose GIE-owned authority governs this execution path."""
+        return self._env_id
 
     def prepare_authority(
         self,
@@ -39,7 +47,7 @@ class GovernedExecutionPath:
     ) -> tuple[ExecutionEvidence, CheckResult]:
         """Create non-authoritative evidence and resolve current GIE authority."""
         evidence = make_bytes_execution_evidence(
-            env_id=0,
+            env_id=self._env_id,
             payload=execution.packet,
             execution_epoch=execution.governance_epoch,
         )
