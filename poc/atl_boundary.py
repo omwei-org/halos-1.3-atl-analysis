@@ -18,10 +18,13 @@ class ATLBoundaryError(ValueError):
 class ATLExecutionObject:
     """Exact ATL bytes plus non-authoritative execution identity."""
 
+    env_id: int
     packet: bytes
     governance_epoch: int
 
     def __post_init__(self) -> None:
+        if self.env_id < 0:
+            raise ATLBoundaryError("ATL execution environment must be non-negative")
         if len(self.packet) != ATL_PACKET_SIZE:
             raise ATLBoundaryError(
                 f"ATL packet must be exactly {ATL_PACKET_SIZE} bytes, got {len(self.packet)}"
@@ -73,7 +76,7 @@ class ATLCommitBoundary:
             )
 
         decision = self._commit_gate.commit(
-            env_id=authority.env_id,
+            env_id=execution.env_id,
             action_digest=execution.packet_digest,
             authority=authority,
             safety=safety,
