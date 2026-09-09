@@ -9,5 +9,22 @@ services:
     environment:
       MAGIC_BOX_HOST: 0.0.0.0
       MAGIC_BOX_PORT: 8080
-    # Host-specific GPIO/CAN/serial device mappings belong here.
-    # The governance runtime itself remains hardware-agnostic.
+      MAGIC_BOX_IO_SOCKET: /run/equinibrium/magic-box-io.sock
+    volumes:
+      - equinibrium-run:/run/equinibrium
+    depends_on:
+      - host-io
+
+  host-io:
+    build:
+      context: ..
+      dockerfile: runtime/Dockerfile
+    command: ["python", "-m", "runtime.host_io"]
+    restart: unless-stopped
+    environment:
+      MAGIC_BOX_IO_SOCKET: /run/equinibrium/magic-box-io.sock
+    volumes:
+      - equinibrium-run:/run/equinibrium
+
+volumes:
+  equinibrium-run:
