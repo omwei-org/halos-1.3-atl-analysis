@@ -20,7 +20,7 @@ def test_sdm_allowed_packet_reaches_receiver_byte_for_byte():
     gie = GIE()
     epoch = gie.grant(0, epoch=481)
     packet = b"HALOS-ATL" + bytes(range(55))
-    command = SDMCommand(packet=packet, governance_epoch=epoch)
+    command = SDMCommand(env_id=0, packet=packet, governance_epoch=epoch)
     boundary = ATLCommitBoundary(CommitGate())
     adapter = SDMCommitAdapter(boundary)
     receiver = MockATLReceiver()
@@ -41,7 +41,7 @@ def test_sdm_replay_after_reauthorization_is_blocked():
     gie = GIE()
     epoch_481 = gie.grant(0, epoch=481)
     packet = bytes(range(64))
-    command = SDMCommand(packet=packet, governance_epoch=epoch_481)
+    command = SDMCommand(env_id=0, packet=packet, governance_epoch=epoch_481)
     boundary = ATLCommitBoundary(CommitGate())
     adapter = SDMCommitAdapter(boundary)
     receiver = MockATLReceiver()
@@ -79,7 +79,7 @@ def test_sdm_packet_mutation_after_authority_binding_is_blocked():
     authority = gie.check_bytes_evidence(evidence, original)
     safety = HalosAdapter.bind(evidence.action_digest, SafetyDecision.ALLOW, "halos_safe")
 
-    mutated_command = SDMCommand(packet=mutated, governance_epoch=epoch)
+    mutated_command = SDMCommand(env_id=0, packet=mutated, governance_epoch=epoch)
     result = adapter.commit(mutated_command, authority, safety)
 
     assert result.decision is Decision.BLOCK
