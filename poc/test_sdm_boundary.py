@@ -85,3 +85,24 @@ def test_sdm_packet_mutation_after_authority_binding_is_blocked():
     assert result.decision is Decision.BLOCK
     assert result.reason == "authority_digest_mismatch"
     assert adapter.transmit_payload(mutated_command, result) is None
+
+
+def test_sdm_treats_packet_as_opaque_bytes():
+    """I-17/I-36: adapter forwards the supplied object without field-level handling."""
+    gie = GIE()
+    epoch = gie.grant(0, epoch=481)
+    # Deliberately use arbitrary bytes that are not a meaningful ATL encoding.
+    packet = bytes([0x00, 0xFF, 0x7E, 0x13]) + bytes(range(60))
+    command = SDMCommand(env_id=0, packet=packet, governance_epoch=epoch)
+    adapter = SDMCommitAdapter(ATLCommitBoundary(CommitGate()))
+    evidence = make_bytes_execution_evidence(0, packet, epoch)
+    authority = gie.check_bytes_evidence(evidence, packet)
+    safety = HalosAdapter.bind(evidence.action_digest, SafetyDecision.ALLOW, "halos_safe")
+
+    result = adapter.commit(command, authority, safety)
+    payload = adapter.transmit_payload(command, result)
+
+    assert result.decision is Decision.ALLOW
+    assert payload is packet
+    assert payload == packet
+    assert len(payload) == len(packet)
