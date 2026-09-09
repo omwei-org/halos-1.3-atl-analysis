@@ -2,10 +2,11 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from poc.atl_boundary import ATLCommitBoundary, ATLExecutionObject
+from poc.atl_boundary import ATLCommitBoundary
 from poc.commit_gate import CommitGate, SafetyDecision
 from poc.gie import CheckResult, Decision, ExecutionEvidence, GIE, make_bytes_execution_evidence
 from poc.halos_adapter import HalosAdapter
+from poc.sdm_boundary import SDMCommand, SDMCommitAdapter
 
 
 @dataclass(frozen=True)
@@ -20,12 +21,11 @@ class ExecutionPathResult:
 
 
 class GovernedExecutionPath:
-    """Reference composition layer for a governed exact-byte execution path.
+    """Canonical SDM → GIE → Halos → Commit Gate execution composition.
 
-    The producer supplies only the concrete execution object and its non-
-    authoritative execution epoch. Authority is resolved from GIE-owned state;
-    safety is supplied independently and bound to the same execution digest.
-    Final authority revalidation happens immediately before the Commit Gate.
+    The SDM command is treated as the exact execution object. Authority is
+    resolved from GIE-owned state, safety is supplied independently, and final
+    authority revalidation occurs immediately before the Commit Gate.
     """
 
     def __init__(self, gie: GIE, env_id: int, gate: CommitGate | None = None) -> None:
@@ -34,34 +34,33 @@ class GovernedExecutionPath:
         self._gie = gie
         self._env_id = env_id
         self._gate = gate or CommitGate()
-        self._boundary = ATLCommitBoundary(self._gate)
+        self._adapter = SDMCommitAdapter(ATLCommitBoundary(self._gate))
 
     @property
     def env_id(self) -> int:
-        """Environment whose GIE-owned authority governs this execution path."""
         return self._env_id
 
     def prepare_authority(
         self,
-        execution: ATLExecutionObject,
+        command: SDMCommand,
     ) -> tuple[ExecutionEvidence, CheckResult]:
-        """Create non-authoritative evidence and resolve current GIE authority."""
+        """Bind non-authoritative execution evidence and resolve GIE authority."""
         evidence = make_bytes_execution_evidence(
             env_id=self._env_id,
-            payload=execution.packet,
-            execution_epoch=execution.governance_epoch,
+            payload=command.packet,
+            execution_epoch=command.governance_epoch,
         )
-        authority = self._gie.check_bytes_evidence(evidence, execution.packet)
+        authority = self._gie.check_bytes_evidence(evidence, command.packet)
         return evidence, authority
 
     def commit(
         self,
-        execution: ATLExecutionObject,
+        command: SDMCommand,
         halos_decision: SafetyDecision = SafetyDecision.ALLOW,
         halos_reason: str = "halos_safe",
     ) -> ExecutionPathResult:
-        """Run the complete path and return the exact transmit payload on ALLOW."""
-        evidence, authority = self.prepare_authority(execution)
+        """Run the canonical path and return the exact SDM packet on ALLOW."""
+        evidence, authority = self.prepare_authority(command)
         safety = HalosAdapter.bind(
             action_digest=evidence.action_digest,
             decision=halos_decision,
@@ -73,11 +72,11 @@ class GovernedExecutionPath:
             env_id=evidence.env_id,
             authority=authority,
             action=None,
-            execution_digest=execution.packet_digest,
+            execution_digest=evidence.action_digest,
         )
 
-        result = self._boundary.commit(execution, authority, safety)
-        payload = self._boundary.transmit_payload(execution, result)
+        result = self._adapter.commit(command, authority, safety)
+        payload = self._adapter.transmit_payload(command, result)
         return ExecutionPathResult(
             decision=result.decision,
             reason=result.reason,
