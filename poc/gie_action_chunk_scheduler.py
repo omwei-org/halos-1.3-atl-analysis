@@ -5,16 +5,19 @@ from collections.abc import Callable
 import torch
 
 from isaaclab_arena.policy.action_scheduling.action_chunk_scheduler import ActionChunkScheduler
-from poc.gie import Decision, GIE
+from poc.gie import Decision, GIE, ExecutionEvidence, make_execution_evidence
 
 
 class GIEActionChunkScheduler:
     """Thin execution-authority enforcement layer around a real ActionChunkScheduler.
 
     The underlying scheduler owns chunk fetch, buffering, indexing, exhaustion, and reset.
-    This layer only stamps authority at fetch time and evaluates the selected action at
-    commit time. It therefore remains independent of GR00T, the policy implementation,
-    and the robot embodiment.
+    This layer only stamps execution evidence at fetch time and evaluates the selected
+    action at commit time. It therefore remains independent of GR00T, the policy
+    implementation, and the robot embodiment.
+
+    Security boundary: this adapter carries execution evidence, never AuthorityContext.
+    Authority is always resolved inside GIE.
     """
 
     def __init__(self, scheduler: ActionChunkScheduler, gie: GIE) -> None:
@@ -24,13 +27,17 @@ class GIEActionChunkScheduler:
         self.device = scheduler.device
         self.action_dim = scheduler.action_dim
 
-        # Epoch of the currently buffered chunk, one value per environment.
+        # Epoch observed when the currently buffered chunk was fetched, one value per env.
         self.action_epoch = torch.full(
             (self.num_envs,),
             -1,
             dtype=torch.int64,
             device=self.device,
         )
+
+        # Digest of the concrete action selected from the currently buffered chunk.
+        # This is evidence, not authority.
+        self.action_digest: list[str | None] = [None] * self.num_envs
 
         # Last action that passed the authority check. Used as the default safe hold.
         self.last_authorized = torch.zeros(
@@ -65,8 +72,8 @@ class GIEActionChunkScheduler:
                     f"fetch returned {chunk.shape=}; expected first dimension {self.num_envs}"
                 )
 
-            # Authority is bound at generation/fetch time, not when the action is later
-            # consumed from the cache. This is the key H3 property.
+            # Authority epoch is captured as evidence at generation/fetch time, not
+            # when the action is later consumed from the cache. This is the key H3 property.
             for env_id in needs_fetch.nonzero(as_tuple=False).flatten().tolist():
                 self.action_epoch[env_id] = self.gie.current_epoch(env_id)
             return chunk
@@ -90,10 +97,16 @@ class GIEActionChunkScheduler:
             )
 
         for env_id in range(self.num_envs):
-            result = self.gie.check(
+            evidence: ExecutionEvidence = make_execution_evidence(
                 env_id=env_id,
                 action=candidate[env_id],
                 action_epoch=int(self.action_epoch[env_id].item()),
+            )
+            self.action_digest[env_id] = evidence.action_digest
+
+            result = self.gie.check_evidence(
+                evidence=evidence,
+                action=candidate[env_id],
             )
 
             if result.decision == Decision.BLOCK:
@@ -107,7 +120,7 @@ class GIEActionChunkScheduler:
         return out
 
     def reset(self, env_ids: torch.Tensor | slice | None = None) -> None:
-        """Reset scheduler state and invalidate buffered authority metadata.
+        """Reset scheduler state and invalidate buffered execution evidence.
 
         The last authorized action is intentionally retained so a subsequent blocked
         action can still use it as a safe hold. A reset does not itself grant authority.
@@ -117,6 +130,12 @@ class GIEActionChunkScheduler:
         if env_ids is None:
             env_ids = slice(None)
         self.action_epoch[env_ids] = -1
+
+        if isinstance(env_ids, slice):
+            self.action_digest = [None] * self.num_envs
+        else:
+            for env_id in env_ids.tolist():
+                self.action_digest[env_id] = None
 
     @property
     def current_action_index(self) -> torch.Tensor:
