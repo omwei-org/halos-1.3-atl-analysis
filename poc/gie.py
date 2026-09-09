@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from enum import Enum
+from hashlib import sha256
 from typing import Optional
 
 import torch
@@ -21,6 +22,19 @@ class AuthorityContext:
 
 
 @dataclass(frozen=True)
+class ExecutionEvidence:
+    """Non-authoritative evidence attached to one concrete generated action.
+
+    The evidence identifies the action and records the authority epoch observed by
+    the execution pipeline. It does not contain or assert authority state.
+    """
+
+    env_id: int
+    action_epoch: int
+    action_digest: str
+
+
+@dataclass(frozen=True)
 class CheckResult:
     """Deterministic result of one execution-authority check."""
 
@@ -28,6 +42,32 @@ class CheckResult:
     reason: str
     action_epoch: int
     authority_epoch: int
+
+
+def action_digest(action: torch.Tensor) -> str:
+    """Return a deterministic digest for the concrete tensor execution object."""
+    tensor = action.detach().cpu().contiguous()
+    payload = (
+        str(tensor.dtype).encode("utf-8")
+        + b"|"
+        + repr(tuple(tensor.shape)).encode("utf-8")
+        + b"|"
+        + tensor.numpy().tobytes()
+    )
+    return sha256(payload).hexdigest()
+
+
+def make_execution_evidence(
+    env_id: int,
+    action: torch.Tensor,
+    action_epoch: int,
+) -> ExecutionEvidence:
+    """Create non-authoritative evidence for one concrete generated action."""
+    return ExecutionEvidence(
+        env_id=env_id,
+        action_epoch=action_epoch,
+        action_digest=action_digest(action),
+    )
 
 
 class GIE:
@@ -55,6 +95,38 @@ class GIE:
     def current_epoch(self, env_id: int) -> int:
         current = self._ctx.get(env_id)
         return current.epoch if current is not None else self._default_epoch
+
+    def check_evidence(
+        self,
+        evidence: ExecutionEvidence,
+        action: torch.Tensor,
+    ) -> CheckResult:
+        """Check evidence against GIE-owned authority and the concrete action.
+
+        ``evidence`` is treated only as caller-supplied evidence. Authority is
+        resolved exclusively from GIE-internal state via ``self._ctx``.
+        """
+        if evidence.env_id < 0:
+            return CheckResult(
+                Decision.BLOCK,
+                "invalid_env_id",
+                evidence.action_epoch,
+                -1,
+            )
+
+        if action_digest(action) != evidence.action_digest:
+            return CheckResult(
+                Decision.BLOCK,
+                "action_digest_mismatch",
+                evidence.action_epoch,
+                self.current_epoch(evidence.env_id),
+            )
+
+        return self.check(
+            env_id=evidence.env_id,
+            action=action,
+            action_epoch=evidence.action_epoch,
+        )
 
     def check(
         self,
