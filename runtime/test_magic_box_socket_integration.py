@@ -7,6 +7,7 @@ import threading
 
 from poc.commit_gate import SafetyDecision
 from runtime.magic_box import MagicBox
+from runtime.commit_envelope import CommittedEnvelope
 from runtime.adapters.unix_socket_actuator import UnixSocketActuator
 
 
@@ -42,19 +43,29 @@ class RecordingHost:
                     connection.sendall((json.dumps(response) + "\n").encode("utf-8"))
 
 
-def test_magic_box_allow_crosses_socket_to_host(tmp_path) -> None:
+def test_magic_box_allow_crosses_socket_as_committed_envelope(tmp_path) -> None:
     path = str(tmp_path / "magic-box-io.sock")
     host = RecordingHost(path)
     host.start()
 
     box = MagicBox(actuator=UnixSocketActuator(path))
     epoch = box.authorize(0)
-    result = box.execute(b"RELAY:ON", epoch, SafetyDecision.ALLOW)
+    result = box.execute(b"RELAY:ON", epoch, SafetyDecision.ALLOW, command_id="cmd-test-001")
     host.join()
 
     assert result["decision"] == "ALLOW"
     assert result["applied"] is True
-    assert host.received == [b"RELAY:ON"]
+    assert result["committed_envelope"] is not None
+    assert CommittedEnvelope.from_dict(result["committed_envelope"]).command_id == "cmd-test-001"
+
+    assert len(host.received) == 1
+    envelope = CommittedEnvelope.from_dict(json.loads(host.received[0].decode("utf-8")))
+    assert envelope.version == 1
+    assert envelope.command_id == "cmd-test-001"
+    assert envelope.target == "RELAY_1"
+    assert envelope.state == "ON"
+    assert envelope.action_digest == result["action_digest"]
+    assert envelope.governance_epoch == epoch
 
 
 def test_magic_box_block_does_not_cross_socket(tmp_path) -> None:
@@ -67,4 +78,5 @@ def test_magic_box_block_does_not_cross_socket(tmp_path) -> None:
 
     assert result["decision"] == "BLOCK"
     assert result["applied"] is False
+    assert result["committed_envelope"] is None
     assert result["reason"] in {"authority_revoked", "execution_epoch_mismatch"}

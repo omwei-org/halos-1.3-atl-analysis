@@ -6,6 +6,8 @@ import os
 import socket
 from dataclasses import dataclass
 
+from runtime.commit_envelope import CommittedEnvelope
+
 
 @dataclass
 class RelayOutput:
@@ -22,25 +24,28 @@ class RelayOutput:
 
 
 class RelayHostAdapter:
-    """Host-side physical-I/O adapter.
+    """Host-side physical-I/O adapter for the committed-envelope boundary.
 
-    This process is deliberately outside the governance core. It receives only
-    payloads that the Magic Box has already committed and translates the opaque
-    payload at the physical-I/O edge.
+    The adapter performs only structural envelope validation and a 1:1 mapping
+    from target/state to the physical relay output. It does not recompute or
+    verify action_digest and does not make governance decisions.
     """
 
     def __init__(self, socket_path: str, output: RelayOutput | None = None) -> None:
         self.socket_path = socket_path
         self.output = output or RelayOutput()
 
-    def apply(self, payload: bytes) -> None:
-        if payload == b"RELAY:ON":
+    def apply(self, envelope_bytes: bytes) -> None:
+        envelope = CommittedEnvelope.from_dict(json.loads(envelope_bytes.decode("utf-8")))
+        if envelope.target != "RELAY_1":
+            raise ValueError("unsupported relay target")
+        if envelope.state == "ON":
             self.output.set(True)
             return
-        if payload == b"RELAY:OFF":
+        if envelope.state == "OFF":
             self.output.set(False)
             return
-        raise ValueError("unsupported relay payload")
+        raise ValueError("unsupported relay state")
 
     def serve_forever(self) -> None:
         try:
@@ -57,10 +62,12 @@ class RelayHostAdapter:
                 connection, _ = server.accept()
                 with connection:
                     data = connection.makefile("rb").readline()
-                    request = json.loads(data)
-                    payload = base64.b64decode(request["payload_b64"], validate=True)
-                    self.apply(payload)
-                    response = {"applied": True, "payload_b64": base64.b64encode(payload).decode("ascii")}
+                    envelope_bytes = base64.b64decode(json.loads(data)["payload_b64"], validate=True)
+                    self.apply(envelope_bytes)
+                    response = {
+                        "applied": True,
+                        "payload_b64": base64.b64encode(envelope_bytes).decode("ascii"),
+                    }
                     connection.sendall((json.dumps(response) + "\n").encode("utf-8"))
 
 

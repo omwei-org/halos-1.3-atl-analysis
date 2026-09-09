@@ -19,7 +19,7 @@ class HostIOClient:
             connection.sendall(request.encode("utf-8"))
             response = json.loads(connection.makefile("rb").readline())
         if response.get("applied") is not True:
-            raise RuntimeError("host I/O adapter rejected committed payload")
+            raise RuntimeError("host I/O adapter rejected committed envelope")
 
 
 if __name__ == "__main__":

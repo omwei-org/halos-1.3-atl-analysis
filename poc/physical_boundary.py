@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Protocol
+from typing import Callable, Protocol
 
 from poc.commit_gate import CommitGate, SafetyDecision, SafetyResult
 from poc.execution_identity import digest_bytes
@@ -13,6 +13,9 @@ class ActuatorAdapter(Protocol):
     """Physical I/O adapter used only after a successful Commit Gate decision."""
 
     def apply(self, payload: bytes) -> None: ...
+
+
+CommitPayloadFactory = Callable[[bytes, CheckResult], bytes]
 
 
 @dataclass(frozen=True)
@@ -76,6 +79,7 @@ class GovernedPhysicalPath:
         execution: PhysicalExecutionObject,
         halos_decision: SafetyDecision = SafetyDecision.ALLOW,
         halos_reason: str = "halos_safe",
+        commit_payload_factory: CommitPayloadFactory | None = None,
     ) -> PhysicalCommitResult:
         """Commit one physical command, or guarantee that no actuator call occurs."""
         if execution.env_id != self._env_id:
@@ -126,9 +130,13 @@ class GovernedPhysicalPath:
                 False,
             )
 
-        # This is the only point at which the autonomous command is allowed
-        # to cross from the governance domain into physical I/O.
-        self._actuator.apply(execution.payload)
+        # The commit payload is constructed only after the final gate decision.
+        # The actuator API remains deliberately minimal: apply(bytes) only.
+        actuator_payload = execution.payload
+        if commit_payload_factory is not None:
+            actuator_payload = commit_payload_factory(execution.payload, authority)
+
+        self._actuator.apply(actuator_payload)
         return PhysicalCommitResult(
             Decision.ALLOW,
             decision.reason,
