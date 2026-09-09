@@ -11,6 +11,7 @@ from poc.gie import CheckResult
 class SDMCommand:
     """Exact ATL command emitted by the Halos SDM boundary."""
 
+    env_id: int
     packet: bytes
     governance_epoch: int
 
@@ -34,6 +35,7 @@ class SDMCommitAdapter:
         safety: SafetyResult,
     ) -> ATLCommitResult:
         execution = ATLExecutionObject(
+            env_id=command.env_id,
             packet=command.packet,
             governance_epoch=command.governance_epoch,
         )
@@ -45,6 +47,7 @@ class SDMCommitAdapter:
         result: ATLCommitResult,
     ) -> bytes | None:
         execution = ATLExecutionObject(
+            env_id=command.env_id,
             packet=command.packet,
             governance_epoch=command.governance_epoch,
         )
