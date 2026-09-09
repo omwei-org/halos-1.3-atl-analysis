@@ -15,7 +15,7 @@ class MockATLReceiver:
 
 
 def _commit_packet(gie: GIE, boundary: ATLCommitBoundary, receiver: MockATLReceiver, packet: bytes, epoch: int):
-    execution = ATLExecutionObject(packet=packet, governance_epoch=epoch)
+    execution = ATLExecutionObject(env_id=0, packet=packet, governance_epoch=epoch)
     evidence = make_bytes_execution_evidence(0, packet, epoch)
 
     authority = gie.check_bytes_evidence(evidence, packet)
@@ -65,7 +65,7 @@ def test_end_to_end_block_produces_zero_transmit_payload():
 
     epoch = gie.grant(0, epoch=481)
     packet = b"H" * 64
-    execution = ATLExecutionObject(packet=packet, governance_epoch=epoch)
+    execution = ATLExecutionObject(env_id=0, packet=packet, governance_epoch=epoch)
     evidence = make_bytes_execution_evidence(0, packet, epoch)
 
     gie.revoke(0)
