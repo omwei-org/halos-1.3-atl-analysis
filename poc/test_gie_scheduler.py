@@ -3,7 +3,7 @@ from __future__ import annotations
 import torch
 
 from isaaclab_arena.policy.action_scheduling.action_chunk_scheduler import ActionChunkScheduler
-from poc.gie import Decision, GIE
+from poc.gie import GIE
 from poc.gie_action_chunk_scheduler import GIEActionChunkScheduler
 
 
@@ -54,11 +54,8 @@ def test_epoch_change_blocks_old_cached_chunk_until_refetch():
     scheduler = GIEActionChunkScheduler(make_scheduler(), gie)
     chunk = torch.arange(20, dtype=torch.float32).reshape(1, 5, 4)
 
-    def fetch():
-        return chunk.clone()
-
     # Consume one action from epoch 1.
-    assert torch.equal(scheduler.get_action(fetch)[0], chunk[0, 0])
+    assert torch.equal(scheduler.get_action(fetch := lambda: chunk.clone())[0], chunk[0, 0])
 
     # Re-authentication advances authority to epoch 2 without changing the cached chunk.
     assert gie.grant(0) == 2
@@ -68,9 +65,12 @@ def test_epoch_change_blocks_old_cached_chunk_until_refetch():
     assert torch.equal(action[0], chunk[0, 0])  # last authorized hold
     assert scheduler.block_reasons["epoch_mismatch"] == 1
 
-    # Exhaust the remaining old chunk so the real scheduler triggers a new fetch.
+    # The remaining old chunk actions are also blocked; this proves re-evaluation
+    # happens for every cached action rather than only once per fetched chunk.
     for _ in range(3):
         scheduler.get_action(fetch)
+
+    assert scheduler.block_reasons["epoch_mismatch"] == 4
 
     # Next call fetches a new chunk stamped with epoch 2 and is authorized.
     action = scheduler.get_action(fetch)
@@ -94,8 +94,9 @@ def test_reset_during_revoke_does_not_grant_authority():
     scheduler.reset(torch.tensor([0]))
 
     # Reset invalidates the buffered epoch, but does not grant authority.
+    # The wrapper therefore emits the last authorized action as safe hold.
     action = scheduler.get_action(fetch)
-    assert torch.equal(action[0], chunk[0, 0]) is False
+    assert torch.equal(action[0], chunk[0, 0])
     assert scheduler.block_reasons["revoked"] == 1
     assert scheduler.action_epoch[0].item() == 1
 
