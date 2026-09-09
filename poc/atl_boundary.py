@@ -1,9 +1,9 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from hashlib import sha256
 
 from poc.commit_gate import CommitGate, SafetyResult
+from poc.execution_identity import ExecutionIdentity, digest_bytes
 from poc.gie import CheckResult, Decision
 
 
@@ -16,7 +16,7 @@ class ATLBoundaryError(ValueError):
 
 @dataclass(frozen=True)
 class ATLExecutionObject:
-    """Exact ATL bytes plus the governance epoch bound to their execution."""
+    """Exact ATL bytes plus non-authoritative execution identity."""
 
     packet: bytes
     governance_epoch: int
@@ -28,8 +28,15 @@ class ATLExecutionObject:
             )
 
     @property
+    def identity(self) -> ExecutionIdentity:
+        return ExecutionIdentity(
+            digest=digest_bytes(self.packet),
+            execution_epoch=self.governance_epoch,
+        )
+
+    @property
     def packet_digest(self) -> str:
-        return sha256(self.packet).hexdigest()
+        return self.identity.digest
 
 
 @dataclass(frozen=True)
