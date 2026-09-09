@@ -6,15 +6,15 @@ from poc.gie import Decision, GIE
 from poc.sdm_boundary import SDMCommand
 
 
-def _command(epoch: int, first_byte: int = 0xA1) -> SDMCommand:
+def _command(env_id: int, epoch: int, first_byte: int = 0xA1) -> SDMCommand:
     packet = bytes([first_byte]) + bytes(range(1, 64))
-    return SDMCommand(packet=packet, governance_epoch=epoch)
+    return SDMCommand(env_id=env_id, packet=packet, governance_epoch=epoch)
 
 
 def test_canonical_sdm_path_preserves_exact_packet_on_allow() -> None:
     gie = GIE()
     epoch = gie.grant(env_id=0, epoch=481)
-    command = _command(epoch)
+    command = _command(0, epoch)
     path = GovernedExecutionPath(gie, env_id=0)
 
     result = path.commit(command)
@@ -28,7 +28,7 @@ def test_canonical_sdm_path_preserves_exact_packet_on_allow() -> None:
 def test_canonical_sdm_path_blocks_replay_after_epoch_change() -> None:
     gie = GIE()
     epoch = gie.grant(env_id=0, epoch=481)
-    command = _command(epoch)
+    command = _command(0, epoch)
     path = GovernedExecutionPath(gie, env_id=0)
 
     first = path.commit(command)
@@ -47,7 +47,7 @@ def test_canonical_sdm_path_blocks_replay_after_epoch_change() -> None:
 def test_canonical_sdm_path_enforces_safety_independently() -> None:
     gie = GIE()
     epoch = gie.grant(env_id=0, epoch=481)
-    command = _command(epoch)
+    command = _command(0, epoch)
     path = GovernedExecutionPath(gie, env_id=0)
 
     result = path.commit(
@@ -65,8 +65,8 @@ def test_canonical_sdm_path_isolated_by_environment() -> None:
     gie = GIE()
     epoch_0 = gie.grant(env_id=0, epoch=481)
     epoch_1 = gie.grant(env_id=1, epoch=731)
-    command_0 = _command(epoch_0)
-    command_1 = _command(epoch_1, first_byte=0xB2)
+    command_0 = _command(0, epoch_0)
+    command_1 = _command(1, epoch_1, first_byte=0xB2)
     path_0 = GovernedExecutionPath(gie, env_id=0)
     path_1 = GovernedExecutionPath(gie, env_id=1)
 
@@ -84,3 +84,16 @@ def test_canonical_sdm_path_isolated_by_environment() -> None:
     assert blocked_0.packet is None
     assert still_allowed_1.decision is Decision.ALLOW
     assert still_allowed_1.packet == command_1.packet
+
+
+def test_canonical_sdm_path_blocks_cross_environment_authority() -> None:
+    gie = GIE()
+    epoch = gie.grant(env_id=0, epoch=481)
+    command = _command(1, epoch)
+    path = GovernedExecutionPath(gie, env_id=1)
+
+    result = path.commit(command)
+
+    assert result.decision is Decision.BLOCK
+    assert result.packet is None
+    assert result.reason == "no_authority_context"
