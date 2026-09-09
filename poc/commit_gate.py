@@ -60,6 +60,14 @@ class CommitGate:
                 authority.authority_epoch,
             )
 
+        if authority.action_digest != action_digest:
+            return CommitDecision(
+                Decision.BLOCK,
+                "authority_digest_mismatch",
+                action_digest,
+                authority.authority_epoch,
+            )
+
         if safety.action_digest != action_digest:
             return CommitDecision(
                 Decision.BLOCK,
