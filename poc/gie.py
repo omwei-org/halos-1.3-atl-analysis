@@ -41,10 +41,11 @@ class ExecutionEvidence:
 
 @dataclass(frozen=True)
 class CheckResult:
-    """Deterministic authority result bound to one concrete execution identity."""
+    """Deterministic authority result bound to one environment and execution identity."""
 
     decision: Decision
     reason: str
+    env_id: int
     action_epoch: int
     authority_epoch: int
     action_digest: str
@@ -125,6 +126,7 @@ class GIE:
             return CheckResult(
                 Decision.BLOCK,
                 "invalid_env_id",
+                evidence.env_id,
                 evidence.action_epoch,
                 -1,
                 evidence.action_digest,
@@ -134,6 +136,7 @@ class GIE:
             return CheckResult(
                 Decision.BLOCK,
                 "action_digest_mismatch",
+                evidence.env_id,
                 evidence.action_epoch,
                 self.current_epoch(evidence.env_id),
                 action_digest(action),
@@ -156,6 +159,7 @@ class GIE:
             return CheckResult(
                 Decision.BLOCK,
                 "invalid_env_id",
+                evidence.env_id,
                 evidence.action_epoch,
                 -1,
                 evidence.action_digest,
@@ -166,6 +170,7 @@ class GIE:
             return CheckResult(
                 Decision.BLOCK,
                 "action_digest_mismatch",
+                evidence.env_id,
                 evidence.action_epoch,
                 self.current_epoch(evidence.env_id),
                 actual_digest,
@@ -195,18 +200,26 @@ class GIE:
             return CheckResult(
                 Decision.BLOCK,
                 "no_authority_context",
+                env_id,
                 action_epoch,
                 -1,
                 digest,
             )
 
         if ctx.revoked:
-            return CheckResult(Decision.BLOCK, "revoked", action_epoch, ctx.epoch, digest)
+            return CheckResult(Decision.BLOCK, "revoked", env_id, action_epoch, ctx.epoch, digest)
 
         if action_epoch != ctx.epoch:
-            return CheckResult(Decision.BLOCK, "epoch_mismatch", action_epoch, ctx.epoch, digest)
+            return CheckResult(
+                Decision.BLOCK,
+                "epoch_mismatch",
+                env_id,
+                action_epoch,
+                ctx.epoch,
+                digest,
+            )
 
-        return CheckResult(Decision.ALLOW, "authorized", action_epoch, ctx.epoch, digest)
+        return CheckResult(Decision.ALLOW, "authorized", env_id, action_epoch, ctx.epoch, digest)
 
     def revalidate(
         self,
@@ -216,11 +229,22 @@ class GIE:
         execution_digest: Optional[str] = None,
     ) -> CheckResult:
         """Re-read GIE authority immediately before the execution commit."""
+        if authority.env_id != env_id:
+            return CheckResult(
+                Decision.BLOCK,
+                "authority_env_mismatch",
+                env_id,
+                authority.action_epoch,
+                self.current_epoch(env_id),
+                execution_digest or authority.action_digest,
+            )
+
         digest = execution_digest or authority.action_digest
         if digest != authority.action_digest:
             return CheckResult(
                 Decision.BLOCK,
                 "action_digest_mismatch",
+                env_id,
                 authority.action_epoch,
                 self.current_epoch(env_id),
                 digest,
@@ -239,6 +263,7 @@ class GIE:
             return CheckResult(
                 Decision.BLOCK,
                 "authority_epoch_changed",
+                env_id,
                 authority.action_epoch,
                 fresh.authority_epoch,
                 digest,
