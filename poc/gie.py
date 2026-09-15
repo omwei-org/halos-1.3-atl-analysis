@@ -107,10 +107,23 @@ class GIE:
         return epoch
 
     def revoke(self, env_id: int) -> None:
-        """Revoke current authority without changing its epoch."""
+        """Revoke authority and advance the governance epoch exactly once."""
         current = self._ctx.get(env_id)
-        epoch = current.epoch if current is not None else self._default_epoch
-        self._ctx[env_id] = AuthorityContext(epoch=epoch, revoked=True)
+        if current is None:
+            self._ctx[env_id] = AuthorityContext(
+                epoch=self._default_epoch + 1,
+                revoked=True,
+            )
+            return
+
+        # Revocation is idempotent: repeating it does not advance the epoch again.
+        if current.revoked:
+            return
+
+        self._ctx[env_id] = AuthorityContext(
+            epoch=current.epoch + 1,
+            revoked=True,
+        )
 
     def current_epoch(self, env_id: int) -> int:
         current = self._ctx.get(env_id)
@@ -191,7 +204,7 @@ class GIE:
         authority_context: Optional[AuthorityContext] = None,
         execution_digest: Optional[str] = None,
     ) -> CheckResult:
-        """Check current authority; caller-supplied context is test/offline only."""
+        """Check freshness before revocation; GIE state is authoritative."""
         digest = execution_digest or ""
         _ = action
 
@@ -206,18 +219,20 @@ class GIE:
                 digest,
             )
 
-        if ctx.revoked:
-            return CheckResult(Decision.BLOCK, "revoked", env_id, action_epoch, ctx.epoch, digest)
-
+        # Freshness is evaluated first. This makes stale-and-revoked objects
+        # report STALE_EPOCH and keeps revocation fail-closed without cleanup.
         if action_epoch != ctx.epoch:
             return CheckResult(
                 Decision.BLOCK,
-                "epoch_mismatch",
+                "STALE_EPOCH",
                 env_id,
                 action_epoch,
                 ctx.epoch,
                 digest,
             )
+
+        if ctx.revoked:
+            return CheckResult(Decision.BLOCK, "revoked", env_id, action_epoch, ctx.epoch, digest)
 
         return CheckResult(Decision.ALLOW, "authorized", env_id, action_epoch, ctx.epoch, digest)
 
