@@ -37,6 +37,7 @@ def test_authority_revoke_blocks_physical_effect():
     result = path.commit(execution)
 
     assert result.decision is Decision.BLOCK
+    assert result.reason == "authority_STALE_EPOCH"
     assert result.applied is False
     assert relay.applied_payloads == []
     assert relay.state is False
