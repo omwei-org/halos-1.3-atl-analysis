@@ -106,15 +106,8 @@ class GovernedPhysicalPath:
             execution_digest=evidence.action_digest,
         )
 
-        if authority.action_epoch != execution.execution_epoch:
-            return PhysicalCommitResult(
-                Decision.BLOCK,
-                "execution_epoch_mismatch",
-                execution.action_digest,
-                execution.execution_epoch,
-                False,
-            )
-
+        # GIE owns freshness semantics. Do not duplicate or reinterpret the
+        # epoch verdict here: STALE_EPOCH must propagate unchanged to the gate.
         decision = self._gate.commit(
             env_id=self._env_id,
             action_digest=execution.action_digest,
