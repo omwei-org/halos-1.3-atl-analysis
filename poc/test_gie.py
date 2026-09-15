@@ -27,7 +27,8 @@ def test_h2_per_action_check_observes_current_authority():
     gie.revoke(0)
     second = gie.check(0, action, epoch)
     assert second.decision is Decision.BLOCK
-    assert second.reason == "revoked"
+    assert second.reason == "STALE_EPOCH"
+    assert second.authority_epoch == epoch + 1
 
 
 def test_h3_revocation_invalidates_cached_epoch():
@@ -39,8 +40,9 @@ def test_h3_revocation_invalidates_cached_epoch():
     result = gie.check(0, cached_action, action_epoch=epoch)
 
     assert result.decision is Decision.BLOCK
+    assert result.reason == "STALE_EPOCH"
     assert result.action_epoch == epoch
-    assert result.authority_epoch == epoch
+    assert result.authority_epoch == epoch + 1
 
 
 def test_reauthorization_creates_new_epoch():
@@ -58,8 +60,32 @@ def test_reauthorization_creates_new_epoch():
     new_result = gie.check(0, new_action, action_epoch=epoch_2)
 
     assert old_result.decision is Decision.BLOCK
-    assert old_result.reason == "epoch_mismatch"
+    assert old_result.reason == "STALE_EPOCH"
     assert new_result.decision is Decision.ALLOW
+
+
+def test_repeated_revoke_is_idempotent():
+    gie = GIE()
+    epoch = gie.grant(0)
+
+    gie.revoke(0)
+    revoked_epoch = gie.current_epoch(0)
+    gie.revoke(0)
+
+    assert revoked_epoch == epoch + 1
+    assert gie.current_epoch(0) == revoked_epoch
+
+
+def test_stale_and_revoked_prefers_stale_epoch():
+    gie = GIE()
+    epoch = gie.grant(0)
+    gie.revoke(0)
+
+    result = gie.check(0, torch.tensor([1.0]), action_epoch=epoch)
+
+    assert result.decision is Decision.BLOCK
+    assert result.reason == "STALE_EPOCH"
+    assert result.authority_epoch == epoch + 1
 
 
 def test_explicit_context_can_be_checked_without_mutating_gie_state():
