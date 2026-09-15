@@ -5,7 +5,6 @@ import torch
 from poc.gie import AuthorityContext, Decision, GIE
 
 
-
 def test_check_uses_internal_gie_state_not_caller_context_when_bound_for_arena():
     """Arena-facing contract: authority cannot be supplied by policy/scheduler code."""
     gie = GIE()
@@ -32,7 +31,8 @@ def test_check_uses_internal_gie_state_not_caller_context_when_bound_for_arena()
         action_epoch=7,
     )
     assert result.decision is Decision.BLOCK
-    assert result.reason == "revoked"
+    assert result.reason == "STALE_EPOCH"
+    assert result.authority_epoch == 8
 
     # A forged context would otherwise turn the same revoked action into ALLOW.
     forged_result = gie.check(
@@ -44,7 +44,6 @@ def test_check_uses_internal_gie_state_not_caller_context_when_bound_for_arena()
     assert forged_result.decision is Decision.ALLOW
 
 
-
 def test_arena_boundary_has_no_authority_context_parameter():
     """The scheduler-facing adapter API must not accept AuthorityContext."""
     from inspect import signature
@@ -54,20 +53,19 @@ def test_arena_boundary_has_no_authority_context_parameter():
     assert "authority_context" not in params
 
 
-
 def test_reset_does_not_grant_authority():
     """Reset is lifecycle invalidation, never an implicit authority grant."""
     gie = GIE()
     gie.grant(0, epoch=3)
     gie.revoke(0)
 
-    # Model the state observed by an Arena adapter after reset: no authority
-    # transition is performed by reset itself.
-    assert gie.current_epoch(0) == 3
+    # Revoke advances the governance epoch. Reset itself performs no authority
+    # transition and therefore cannot restore the previous epoch.
+    assert gie.current_epoch(0) == 4
     result = gie.check(
         env_id=0,
         action=torch.zeros(4),
         action_epoch=3,
     )
     assert result.decision is Decision.BLOCK
-    assert result.reason == "revoked"
+    assert result.reason == "STALE_EPOCH"
