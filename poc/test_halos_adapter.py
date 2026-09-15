@@ -20,19 +20,15 @@ def test_gie_block_and_halos_allow_still_blocks():
     gie.revoke(0)
     authority = gie.check_evidence(evidence, action)
     safety = HalosAdapter.bind(evidence.action_digest, SafetyDecision.ALLOW, "halos_safe")
-
-    result = CommitGate().commit(evidence.action_digest, authority, safety)
-
+    result = CommitGate().commit(0, evidence.action_digest, authority, safety)
     assert result.decision is Decision.BLOCK
-    assert result.reason == "authority_revoked"
+    assert result.reason == "authority_STALE_EPOCH"
 
 
 def test_gie_allow_and_halos_block_still_blocks():
     _, _, evidence, authority = _inputs()
     safety = HalosAdapter.bind(evidence.action_digest, SafetyDecision.BLOCK, "unsafe")
-
-    result = CommitGate().commit(evidence.action_digest, authority, safety)
-
+    result = CommitGate().commit(0, evidence.action_digest, authority, safety)
     assert authority.decision is Decision.ALLOW
     assert result.decision is Decision.BLOCK
     assert result.reason == "safety_unsafe"
@@ -41,9 +37,7 @@ def test_gie_allow_and_halos_block_still_blocks():
 def test_gie_allow_and_halos_allow_same_action_commits():
     _, _, evidence, authority = _inputs()
     safety = HalosAdapter.bind(evidence.action_digest, SafetyDecision.ALLOW, "halos_safe")
-
-    result = CommitGate().commit(evidence.action_digest, authority, safety)
-
+    result = CommitGate().commit(0, evidence.action_digest, authority, safety)
     assert result.decision is Decision.ALLOW
     assert result.reason == "committable"
 
@@ -53,8 +47,6 @@ def test_halos_result_for_different_action_cannot_commit():
     other_action = action + 1.0
     other_evidence = make_execution_evidence(0, other_action, evidence.action_epoch)
     safety = HalosAdapter.bind(other_evidence.action_digest, SafetyDecision.ALLOW, "halos_safe")
-
-    result = CommitGate().commit(evidence.action_digest, authority, safety)
-
+    result = CommitGate().commit(0, evidence.action_digest, authority, safety)
     assert result.decision is Decision.BLOCK
     assert result.reason == "safety_digest_mismatch"
