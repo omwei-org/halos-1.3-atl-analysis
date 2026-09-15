@@ -1,6 +1,12 @@
 from __future__ import annotations
 
+import pytest
 import torch
+
+# IsaacLab Arena is an external integration dependency. Core CI must remain
+# runnable without it; the scheduler integration suite is exercised when the
+# dependency is available.
+pytest.importorskip("isaaclab_arena")
 
 from isaaclab_arena.policy.action_scheduling.action_chunk_scheduler import ActionChunkScheduler
 from poc.gie import GIE
@@ -38,7 +44,7 @@ def test_mid_chunk_revoke_blocks_remaining_cached_actions():
         assert torch.equal(action[0], chunk[0, 2]), f"index {i} leaked"
 
     assert scheduler.blocked_actions == 2
-    assert scheduler.block_reasons == {"revoked": 2}
+    assert scheduler.block_reasons == {"STALE_EPOCH": 2}
 
 
 def test_epoch_change_blocks_old_cached_chunk_until_refetch():
@@ -53,12 +59,12 @@ def test_epoch_change_blocks_old_cached_chunk_until_refetch():
 
     action = scheduler.get_action(fetch)
     assert torch.equal(action[0], chunk[0, 0])
-    assert scheduler.block_reasons["epoch_mismatch"] == 1
+    assert scheduler.block_reasons["STALE_EPOCH"] == 1
 
     for _ in range(3):
         scheduler.get_action(fetch)
 
-    assert scheduler.block_reasons["epoch_mismatch"] == 4
+    assert scheduler.block_reasons["STALE_EPOCH"] == 4
 
     action = scheduler.get_action(fetch)
     assert torch.equal(action[0], chunk[0, 0])
@@ -106,8 +112,8 @@ def test_reset_during_revoke_does_not_grant_authority():
 
     action = scheduler.get_action(fetch)
     assert torch.equal(action[0], chunk[0, 0])
-    assert scheduler.block_reasons["revoked"] == 1
-    assert scheduler.action_epoch[0].item() == 1
+    assert scheduler.block_reasons["STALE_EPOCH"] == 1
+    assert scheduler.action_epoch[0].item() == 2
 
 
 def test_multi_env_authority_is_independent():
