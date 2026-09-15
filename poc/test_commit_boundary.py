@@ -9,22 +9,17 @@ def test_stale_allow_cannot_cross_commit_after_revocation():
     epoch = gie.grant(0, epoch=1)
     gate = CommitGate()
     action = torch.tensor([0.1, 0.2, 0.3])
-
     evidence = make_execution_evidence(0, action, epoch)
     checked = gie.check_evidence(evidence, action)
     assert checked.decision is Decision.ALLOW
-
-    # TOCTOU window: authority changes after the first check.
     gie.revoke(0)
-
     final_authority = gie.revalidate(0, checked, action)
     safety = SafetyResult(SafetyDecision.ALLOW, "safe", evidence.action_digest)
     result = gate.commit(0, evidence.action_digest, final_authority, safety)
-
     assert final_authority.decision is Decision.BLOCK
-    assert final_authority.reason == "revoked"
+    assert final_authority.reason == "STALE_EPOCH"
     assert result.decision is Decision.BLOCK
-    assert result.reason == "authority_revoked"
+    assert result.reason == "authority_STALE_EPOCH"
 
 
 def test_stale_allow_cannot_cross_commit_after_epoch_change():
@@ -32,22 +27,18 @@ def test_stale_allow_cannot_cross_commit_after_epoch_change():
     epoch_1 = gie.grant(0, epoch=1)
     gate = CommitGate()
     action = torch.tensor([0.4, 0.5, 0.6])
-
     evidence = make_execution_evidence(0, action, epoch_1)
     checked = gie.check_evidence(evidence, action)
     assert checked.decision is Decision.ALLOW
-
     gie.revoke(0)
     gie.grant(0, epoch=2)
-
     final_authority = gie.revalidate(0, checked, action)
     safety = SafetyResult(SafetyDecision.ALLOW, "safe", evidence.action_digest)
     result = gate.commit(0, evidence.action_digest, final_authority, safety)
-
     assert final_authority.decision is Decision.BLOCK
-    assert final_authority.reason == "epoch_mismatch"
+    assert final_authority.reason == "STALE_EPOCH"
     assert result.decision is Decision.BLOCK
-    assert result.reason == "authority_epoch_mismatch"
+    assert result.reason == "authority_STALE_EPOCH"
 
 
 def test_final_revalidation_preserves_allow_for_current_authority():
@@ -55,13 +46,11 @@ def test_final_revalidation_preserves_allow_for_current_authority():
     epoch = gie.grant(0, epoch=7)
     gate = CommitGate()
     action = torch.tensor([0.7, 0.8, 0.9])
-
     evidence = make_execution_evidence(0, action, epoch)
     checked = gie.check_evidence(evidence, action)
     final_authority = gie.revalidate(0, checked, action)
     safety = SafetyResult(SafetyDecision.ALLOW, "safe", evidence.action_digest)
     result = gate.commit(0, evidence.action_digest, final_authority, safety)
-
     assert final_authority.decision is Decision.ALLOW
     assert final_authority.authority_epoch == epoch
     assert result.decision is Decision.ALLOW
