@@ -37,7 +37,9 @@ class PhysicalCommitResult:
     reason: str
     action_digest: str
     execution_epoch: int
+    authority_epoch: int
     applied: bool
+    command_id: str | None
 
 
 class GovernedPhysicalPath:
@@ -80,6 +82,7 @@ class GovernedPhysicalPath:
         halos_decision: SafetyDecision = SafetyDecision.ALLOW,
         halos_reason: str = "halos_safe",
         commit_payload_factory: CommitPayloadFactory | None = None,
+        command_id: str | None = None,
     ) -> PhysicalCommitResult:
         """Commit one physical command, or guarantee that no actuator call occurs."""
         if execution.env_id != self._env_id:
@@ -88,7 +91,9 @@ class GovernedPhysicalPath:
                 "execution_env_mismatch",
                 execution.action_digest,
                 execution.execution_epoch,
+                self._gie.current_epoch(self._env_id),
                 False,
+                None,
             )
 
         evidence, authority = self.prepare_authority(execution)
@@ -120,7 +125,9 @@ class GovernedPhysicalPath:
                 decision.reason,
                 execution.action_digest,
                 execution.execution_epoch,
+                decision.authority_epoch,
                 False,
+                command_id,
             )
 
         # The commit payload is constructed only after the final gate decision.
@@ -135,7 +142,9 @@ class GovernedPhysicalPath:
             decision.reason,
             execution.action_digest,
             execution.execution_epoch,
+            decision.authority_epoch,
             True,
+            command_id,
         )
 
 
