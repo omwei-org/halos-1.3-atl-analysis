@@ -5,12 +5,14 @@ import hashlib
 import json
 import os
 import threading
+import uuid
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any
 
 from poc.commit_gate import SafetyDecision
 from poc.gie import CheckResult, GIE
 from poc.physical_boundary import GovernedPhysicalPath, PhysicalExecutionObject, RecordingRelay
+from poc.evidence import EvidenceRecorder
 from runtime.commit_envelope import CommittedEnvelope, encode_envelope
 from runtime.host_io_client import HostIOClient
 
@@ -49,7 +51,9 @@ class MagicBox:
             socket_path = os.getenv("MAGIC_BOX_IO_SOCKET")
             actuator = HostIOClient(socket_path) if socket_path else RuntimeRelay()
         self.actuator = actuator
-        self.path = GovernedPhysicalPath(self.gie, env_id=0, actuator=self.actuator)
+        evidence_path = os.getenv("MAGIC_BOX_EVIDENCE_PATH")
+        self.evidence = EvidenceRecorder(evidence_path)
+        self.path = GovernedPhysicalPath(self.gie, env_id=0, actuator=self.actuator, evidence=self.evidence)
         self._commit_seq = 0
         self._commit_seq_lock = threading.Lock()
 
@@ -84,6 +88,7 @@ class MagicBox:
         state: str | None = None,
     ) -> dict[str, Any]:
         resolved_state = state if state is not None else self._relay_state(payload)
+        effective_command_id = command_id or f"cmd-{uuid.uuid4()}"
         if target != "RELAY_1":
             raise ValueError("unsupported relay target")
         if resolved_state not in {"ON", "OFF"}:
@@ -96,7 +101,7 @@ class MagicBox:
             commit_seq = self._next_commit_seq()
             committed = CommittedEnvelope(
                 version=1,
-                command_id=command_id or f"cmd-{commit_seq:06d}",
+                command_id=effective_command_id,
                 target=target,
                 state=resolved_state,
                 commit_seq=commit_seq,
@@ -113,6 +118,8 @@ class MagicBox:
             "reason": result.reason,
             "action_digest": result.action_digest,
             "execution_epoch": result.execution_epoch,
+            "authority_epoch": result.authority_epoch,
+            "command_id": effective_command_id,
             "applied": result.applied,
             "relay_state": relay_state,
             "committed_envelope": committed.to_dict() if committed is not None else None,
