@@ -37,9 +37,9 @@ class PhysicalCommitResult:
     reason: str
     action_digest: str
     execution_epoch: int
-    authority_epoch: int
-    applied: bool
-    command_id: str | None
+    authority_epoch: int = 0
+    applied: bool = False
+    command_id: str | None = None
 
 
 class GovernedPhysicalPath:
