@@ -100,8 +100,9 @@ def test_run002_revocation_persists_stage_correlation():
     command_id = "run002-revoke-001"
     execution = PhysicalExecutionObject(0, b"RELAY:ON", epoch)
 
+    prepared = path.prepare(execution, command_id=command_id)
     gie.revoke(0)
-    result = path.commit(execution, command_id=command_id)
+    result = path.commit_prepared(prepared)
 
     assert result.decision is Decision.BLOCK
     assert result.reason == "authority_STALE_EPOCH"
@@ -140,3 +141,19 @@ def test_run002_control_no_authority_change_allows_and_persists():
     assert all(r.action_digest == execution.action_digest for r in records)
     assert all(r.authority_epoch == epoch for r in records)
     assert records[-1].execution_outcome == "COMMITTED"
+
+
+def test_auto_command_id_is_shared_by_result_and_evidence():
+    from poc.evidence import EvidenceRecorder
+
+    gie = authorized_gie()
+    relay = RecordingRelay()
+    recorder = EvidenceRecorder()
+    path = GovernedPhysicalPath(gie, env_id=0, actuator=relay, evidence=recorder)
+    execution = PhysicalExecutionObject(0, b"RELAY:ON", gie.current_epoch(0))
+
+    result = path.commit(execution)
+
+    assert result.decision is Decision.ALLOW
+    assert result.command_id is not None
+    assert all(r.command_id == result.command_id for r in recorder.records)
