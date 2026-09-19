@@ -7,6 +7,7 @@ from poc.commit_gate import CommitGate, SafetyDecision, SafetyResult
 from poc.execution_identity import digest_bytes
 from poc.gie import CheckResult, Decision, ExecutionEvidence, GIE, make_bytes_execution_evidence
 from poc.halos_adapter import HalosAdapter
+from poc.evidence import CommitEvidence, EvidenceRecorder
 
 
 class ActuatorAdapter(Protocol):
@@ -52,13 +53,15 @@ class GovernedPhysicalPath:
     """
 
     def __init__(self, gie: GIE, env_id: int, actuator: ActuatorAdapter,
-                 gate: CommitGate | None = None) -> None:
+                 gate: CommitGate | None = None,
+                 evidence: EvidenceRecorder | None = None) -> None:
         if env_id < 0:
             raise ValueError("env_id must be non-negative")
         self._gie = gie
         self._env_id = env_id
         self._actuator = actuator
         self._gate = gate or CommitGate()
+        self._evidence = evidence
 
     @property
     def env_id(self) -> int:
@@ -97,6 +100,9 @@ class GovernedPhysicalPath:
             )
 
         evidence, authority = self.prepare_authority(execution)
+        effective_command_id = command_id or f"pending-{evidence.action_digest[:12]}"
+        if self._evidence is not None:
+            self._evidence.record(CommitEvidence("PREPARE", effective_command_id, evidence.env_id, evidence.action_digest, execution.execution_epoch, authority.authority_epoch, authority.decision.value, authority.reason, None, None, None, None, None, False, EvidenceRecorder.now()))
         safety = HalosAdapter.bind(
             action_digest=evidence.action_digest,
             decision=halos_decision,
@@ -111,6 +117,9 @@ class GovernedPhysicalPath:
             execution_digest=evidence.action_digest,
         )
 
+        if self._evidence is not None:
+            self._evidence.record(CommitEvidence("FINAL_AUTHORITY_CHECK", effective_command_id, evidence.env_id, evidence.action_digest, execution.execution_epoch, authority.authority_epoch, authority.decision.value, authority.reason, safety.decision.value, safety.reason, None, None, None, False, EvidenceRecorder.now()))
+
         # GIE owns freshness semantics. Do not duplicate or reinterpret the
         # epoch verdict here: STALE_EPOCH must propagate unchanged to the gate.
         decision = self._gate.commit(
@@ -120,6 +129,8 @@ class GovernedPhysicalPath:
             safety=safety,
         )
         if decision.decision is Decision.BLOCK:
+            if self._evidence is not None:
+                self._evidence.record(CommitEvidence("COMMIT", effective_command_id, evidence.env_id, evidence.action_digest, execution.execution_epoch, decision.authority_epoch, authority.decision.value, authority.reason, safety.decision.value, safety.reason, decision.decision.value, decision.reason, "NOT_ATTEMPTED", False, EvidenceRecorder.now()))
             return PhysicalCommitResult(
                 Decision.BLOCK,
                 decision.reason,
@@ -136,7 +147,14 @@ class GovernedPhysicalPath:
         if commit_payload_factory is not None:
             actuator_payload = commit_payload_factory(execution.payload, authority)
 
-        self._actuator.apply(actuator_payload)
+        try:
+            self._actuator.apply(actuator_payload)
+        except Exception:
+            if self._evidence is not None:
+                self._evidence.record(CommitEvidence("EXECUTION", effective_command_id, evidence.env_id, evidence.action_digest, execution.execution_epoch, decision.authority_epoch, authority.decision.value, authority.reason, safety.decision.value, safety.reason, decision.decision.value, decision.reason, "FAILED", False, EvidenceRecorder.now()))
+            raise
+        if self._evidence is not None:
+            self._evidence.record(CommitEvidence("EXECUTION", effective_command_id, evidence.env_id, evidence.action_digest, execution.execution_epoch, decision.authority_epoch, authority.decision.value, authority.reason, safety.decision.value, safety.reason, decision.decision.value, decision.reason, "COMMITTED", True, EvidenceRecorder.now()))
         return PhysicalCommitResult(
             Decision.ALLOW,
             decision.reason,
