@@ -43,6 +43,18 @@ class PhysicalCommitResult:
     command_id: str | None = None
 
 
+@dataclass(frozen=True)
+class PreparedPhysicalExecution:
+    """Prepared execution state held between authority evaluation and commit."""
+
+    execution: PhysicalExecutionObject
+    evidence: ExecutionEvidence
+    authority: CheckResult
+    safety: SafetyResult
+    command_id: str
+    commit_payload_factory: CommitPayloadFactory | None = None
+
+
 class GovernedPhysicalPath:
     """Generic execution boundary between an autonomous controller and an actuator.
 
@@ -70,7 +82,7 @@ class GovernedPhysicalPath:
     def prepare_authority(
         self, execution: PhysicalExecutionObject
     ) -> tuple[ExecutionEvidence, CheckResult]:
-        """Create non-authoritative evidence and resolve authority in GIE."""
+        """Create execution evidence and resolve the current authority."""
         evidence = make_bytes_execution_evidence(
             env_id=self._env_id,
             payload=execution.payload,
@@ -78,6 +90,130 @@ class GovernedPhysicalPath:
         )
         authority = self._gie.check_bytes_evidence(evidence, execution.payload)
         return evidence, authority
+
+    def prepare(
+        self,
+        execution: PhysicalExecutionObject,
+        halos_decision: SafetyDecision = SafetyDecision.ALLOW,
+        halos_reason: str = "halos_safe",
+        commit_payload_factory: CommitPayloadFactory | None = None,
+        command_id: str | None = None,
+    ) -> PreparedPhysicalExecution:
+        """Prepare an execution without crossing the physical-effect boundary."""
+        if execution.env_id != self._env_id:
+            raise ValueError("execution_env_mismatch")
+
+        evidence, authority = self.prepare_authority(execution)
+        effective_command_id = command_id or f"pending-{evidence.action_digest[:12]}"
+        safety = HalosAdapter.bind(
+            action_digest=evidence.action_digest,
+            decision=halos_decision,
+            reason=halos_reason,
+        )
+
+        if self._evidence is not None:
+            self._evidence.record(CommitEvidence(
+                "PREPARE", effective_command_id, evidence.env_id,
+                evidence.action_digest, execution.execution_epoch,
+                authority.authority_epoch, authority.decision.value,
+                authority.reason, None, None, None, None, None, False,
+                EvidenceRecorder.now(),
+            ))
+
+        return PreparedPhysicalExecution(
+            execution=execution,
+            evidence=evidence,
+            authority=authority,
+            safety=safety,
+            command_id=effective_command_id,
+            commit_payload_factory=commit_payload_factory,
+        )
+
+    def commit_prepared(
+        self, prepared: PreparedPhysicalExecution
+    ) -> PhysicalCommitResult:
+        """Revalidate authority and cross the physical-effect boundary if allowed."""
+        execution = prepared.execution
+        evidence = prepared.evidence
+        safety = prepared.safety
+        command_id = prepared.command_id
+
+        # TOCTOU defense: authority is re-read immediately before the final gate.
+        authority = self._gie.revalidate(
+            env_id=evidence.env_id,
+            authority=prepared.authority,
+            action=None,
+            execution_digest=evidence.action_digest,
+        )
+
+        if self._evidence is not None:
+            self._evidence.record(CommitEvidence(
+                "FINAL_AUTHORITY_CHECK", command_id, evidence.env_id,
+                evidence.action_digest, execution.execution_epoch,
+                authority.authority_epoch, authority.decision.value,
+                authority.reason, safety.decision.value, safety.reason,
+                None, None, None, False, EvidenceRecorder.now(),
+            ))
+
+        decision = self._gate.commit(
+            env_id=self._env_id,
+            action_digest=execution.action_digest,
+            authority=authority,
+            safety=safety,
+        )
+
+        if decision.decision is Decision.BLOCK:
+            if self._evidence is not None:
+                self._evidence.record(CommitEvidence(
+                    "COMMIT", command_id, evidence.env_id,
+                    evidence.action_digest, execution.execution_epoch,
+                    decision.authority_epoch, authority.decision.value,
+                    authority.reason, safety.decision.value, safety.reason,
+                    decision.decision.value, decision.reason,
+                    "NOT_ATTEMPTED", False, EvidenceRecorder.now(),
+                ))
+            return PhysicalCommitResult(
+                Decision.BLOCK, decision.reason, execution.action_digest,
+                execution.execution_epoch, decision.authority_epoch,
+                False, command_id,
+            )
+
+        # The commit payload is constructed only after the final gate decision.
+        actuator_payload = execution.payload
+        if prepared.commit_payload_factory is not None:
+            actuator_payload = prepared.commit_payload_factory(
+                execution.payload, authority
+            )
+
+        try:
+            self._actuator.apply(actuator_payload)
+        except Exception:
+            if self._evidence is not None:
+                self._evidence.record(CommitEvidence(
+                    "EXECUTION", command_id, evidence.env_id,
+                    evidence.action_digest, execution.execution_epoch,
+                    decision.authority_epoch, authority.decision.value,
+                    authority.reason, safety.decision.value, safety.reason,
+                    decision.decision.value, decision.reason,
+                    "FAILED", False, EvidenceRecorder.now(),
+                ))
+            raise
+
+        if self._evidence is not None:
+            self._evidence.record(CommitEvidence(
+                "EXECUTION", command_id, evidence.env_id,
+                evidence.action_digest, execution.execution_epoch,
+                decision.authority_epoch, authority.decision.value,
+                authority.reason, safety.decision.value, safety.reason,
+                decision.decision.value, decision.reason,
+                "COMMITTED", True, EvidenceRecorder.now(),
+            ))
+
+        return PhysicalCommitResult(
+            Decision.ALLOW, decision.reason, execution.action_digest,
+            execution.execution_epoch, decision.authority_epoch,
+            True, command_id,
+        )
 
     def commit(
         self,
@@ -87,7 +223,7 @@ class GovernedPhysicalPath:
         commit_payload_factory: CommitPayloadFactory | None = None,
         command_id: str | None = None,
     ) -> PhysicalCommitResult:
-        """Commit one physical command, or guarantee that no actuator call occurs."""
+        """Backward-compatible prepare-then-commit convenience operation."""
         if execution.env_id != self._env_id:
             return PhysicalCommitResult(
                 Decision.BLOCK,
@@ -96,74 +232,17 @@ class GovernedPhysicalPath:
                 execution.execution_epoch,
                 self._gie.current_epoch(self._env_id),
                 False,
-                None,
-            )
-
-        evidence, authority = self.prepare_authority(execution)
-        effective_command_id = command_id or f"pending-{evidence.action_digest[:12]}"
-        if self._evidence is not None:
-            self._evidence.record(CommitEvidence("PREPARE", effective_command_id, evidence.env_id, evidence.action_digest, execution.execution_epoch, authority.authority_epoch, authority.decision.value, authority.reason, None, None, None, None, None, False, EvidenceRecorder.now()))
-        safety = HalosAdapter.bind(
-            action_digest=evidence.action_digest,
-            decision=halos_decision,
-            reason=halos_reason,
-        )
-
-        # TOCTOU defense: authority is re-read immediately before the final gate.
-        authority = self._gie.revalidate(
-            env_id=evidence.env_id,
-            authority=authority,
-            action=None,
-            execution_digest=evidence.action_digest,
-        )
-
-        if self._evidence is not None:
-            self._evidence.record(CommitEvidence("FINAL_AUTHORITY_CHECK", effective_command_id, evidence.env_id, evidence.action_digest, execution.execution_epoch, authority.authority_epoch, authority.decision.value, authority.reason, safety.decision.value, safety.reason, None, None, None, False, EvidenceRecorder.now()))
-
-        # GIE owns freshness semantics. Do not duplicate or reinterpret the
-        # epoch verdict here: STALE_EPOCH must propagate unchanged to the gate.
-        decision = self._gate.commit(
-            env_id=self._env_id,
-            action_digest=execution.action_digest,
-            authority=authority,
-            safety=safety,
-        )
-        if decision.decision is Decision.BLOCK:
-            if self._evidence is not None:
-                self._evidence.record(CommitEvidence("COMMIT", effective_command_id, evidence.env_id, evidence.action_digest, execution.execution_epoch, decision.authority_epoch, authority.decision.value, authority.reason, safety.decision.value, safety.reason, decision.decision.value, decision.reason, "NOT_ATTEMPTED", False, EvidenceRecorder.now()))
-            return PhysicalCommitResult(
-                Decision.BLOCK,
-                decision.reason,
-                execution.action_digest,
-                execution.execution_epoch,
-                decision.authority_epoch,
-                False,
                 command_id,
             )
 
-        # The commit payload is constructed only after the final gate decision.
-        # The actuator API remains deliberately minimal: apply(bytes) only.
-        actuator_payload = execution.payload
-        if commit_payload_factory is not None:
-            actuator_payload = commit_payload_factory(execution.payload, authority)
-
-        try:
-            self._actuator.apply(actuator_payload)
-        except Exception:
-            if self._evidence is not None:
-                self._evidence.record(CommitEvidence("EXECUTION", effective_command_id, evidence.env_id, evidence.action_digest, execution.execution_epoch, decision.authority_epoch, authority.decision.value, authority.reason, safety.decision.value, safety.reason, decision.decision.value, decision.reason, "FAILED", False, EvidenceRecorder.now()))
-            raise
-        if self._evidence is not None:
-            self._evidence.record(CommitEvidence("EXECUTION", effective_command_id, evidence.env_id, evidence.action_digest, execution.execution_epoch, decision.authority_epoch, authority.decision.value, authority.reason, safety.decision.value, safety.reason, decision.decision.value, decision.reason, "COMMITTED", True, EvidenceRecorder.now()))
-        return PhysicalCommitResult(
-            Decision.ALLOW,
-            decision.reason,
-            execution.action_digest,
-            execution.execution_epoch,
-            decision.authority_epoch,
-            True,
-            command_id,
+        prepared = self.prepare(
+            execution,
+            halos_decision=halos_decision,
+            halos_reason=halos_reason,
+            commit_payload_factory=commit_payload_factory,
+            command_id=command_id,
         )
+        return self.commit_prepared(prepared)
 
 
 class RecordingRelay:
