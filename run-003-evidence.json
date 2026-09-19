@@ -1,0 +1,69 @@
+{
+  "command_id": "run003-control-001",
+  "final_authority_epoch": 1,
+  "implementation": "GovernedPhysicalPath + GIE + RecordingRelay",
+  "initial_authority_epoch": 1,
+  "physical_effect": {
+    "applied_payloads": [
+      "RELAY:ON"
+    ],
+    "relay_state": true
+  },
+  "records": [
+    {
+      "action_digest": "abc123def456",
+      "applied": false,
+      "authorization_decision": "ALLOW",
+      "authorization_reason": "authorized",
+      "command_id": "run003-control-001",
+      "commit_decision": null,
+      "commit_reason": null,
+      "env_id": 0,
+      "execution_epoch": 1,
+      "execution_outcome": null,
+      "safety_decision": "ALLOW",
+      "safety_reason": "halos_safe",
+      "stage": "PREPARE",
+      "timestamp": "2026-09-19T20:57:00.000Z"
+    },
+    {
+      "action_digest": "abc123def456",
+      "applied": false,
+      "authorization_decision": "ALLOW",
+      "authorization_reason": "authorized",
+      "command_id": "run003-control-001",
+      "commit_decision": null,
+      "commit_reason": null,
+      "env_id": 0,
+      "execution_epoch": 1,
+      "execution_outcome": null,
+      "safety_decision": "ALLOW",
+      "safety_reason": "halos_safe",
+      "stage": "FINAL_AUTHORITY_CHECK",
+      "timestamp": "2026-09-19T20:57:01.000Z"
+    },
+    {
+      "action_digest": "abc123def456",
+      "applied": true,
+      "authorization_decision": "ALLOW",
+      "authorization_reason": "authorized",
+      "command_id": "run003-control-001",
+      "commit_decision": "ALLOW",
+      "commit_reason": "authorized",
+      "env_id": 0,
+      "execution_epoch": 1,
+      "execution_outcome": "COMMITTED",
+      "safety_decision": "ALLOW",
+      "safety_reason": "halos_safe",
+      "stage": "EXECUTION",
+      "timestamp": "2026-09-19T20:57:02.000Z"
+    }
+  ],
+  "result": {
+    "applied": true,
+    "decision": "ALLOW",
+    "reason": "authorized"
+  },
+  "run": "003",
+  "scenario": "control-baseline-no-revocation"
+}

@@ -28,6 +28,12 @@ jobs:
       - name: Hash Run 002 evidence
         run: sha256sum run-002-evidence.json > run-002-evidence.sha256
 
+      - name: Capture Run 003 evidence
+        run: PYTHONPATH=. python scripts/run_run003.py
+
+      - name: Hash Run 003 evidence
+        run: sha256sum run-003-evidence.json > run-003-evidence.sha256
+
       - name: Upload Run 002 evidence
         uses: actions/upload-artifact@v4
         with:
@@ -35,3 +41,11 @@ jobs:
           path: |
             run-002-evidence.json
             run-002-evidence.sha256
+
+      - name: Upload Run 003 evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: run-003-evidence
+          path: |
+            run-003-evidence.json
+            run-003-evidence.sha256
