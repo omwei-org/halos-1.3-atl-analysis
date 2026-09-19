@@ -21,3 +21,12 @@ jobs:
 
       - name: Run test suite
         run: python -m pytest -q
+
+      - name: Capture Run 002 evidence
+        run: PYTHONPATH=. python scripts/run_run002.py
+
+      - name: Upload Run 002 evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: run-002-evidence
+          path: run-002-evidence.json
