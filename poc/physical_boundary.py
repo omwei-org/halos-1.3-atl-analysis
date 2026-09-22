@@ -117,7 +117,7 @@ class GovernedPhysicalPath:
                 evidence.action_digest, execution.execution_epoch,
                 authority.authority_epoch, authority.decision.value,
                 authority.reason, None, None, None, None, None, False,
-                EvidenceRecorder.now(),
+                EvidenceRecorder.now(), "", "",
             ))
 
         return PreparedPhysicalExecution(
@@ -152,7 +152,7 @@ class GovernedPhysicalPath:
                 evidence.action_digest, execution.execution_epoch,
                 authority.authority_epoch, authority.decision.value,
                 authority.reason, safety.decision.value, safety.reason,
-                None, None, None, False, EvidenceRecorder.now(),
+                None, None, None, False, EvidenceRecorder.now(), "", "",
             ))
 
         decision = self._gate.commit(
@@ -170,7 +170,7 @@ class GovernedPhysicalPath:
                     decision.authority_epoch, authority.decision.value,
                     authority.reason, safety.decision.value, safety.reason,
                     decision.decision.value, decision.reason,
-                    "NOT_ATTEMPTED", False, EvidenceRecorder.now(),
+                    "NOT_ATTEMPTED", False, EvidenceRecorder.now(), "", "",
                 ))
             return PhysicalCommitResult(
                 Decision.BLOCK, decision.reason, execution.action_digest,
@@ -195,7 +195,7 @@ class GovernedPhysicalPath:
                     decision.authority_epoch, authority.decision.value,
                     authority.reason, safety.decision.value, safety.reason,
                     decision.decision.value, decision.reason,
-                    "FAILED", False, EvidenceRecorder.now(),
+                    "FAILED", False, EvidenceRecorder.now(), "", "",
                 ))
             raise
 
@@ -206,7 +206,7 @@ class GovernedPhysicalPath:
                 decision.authority_epoch, authority.decision.value,
                 authority.reason, safety.decision.value, safety.reason,
                 decision.decision.value, decision.reason,
-                "COMMITTED", True, EvidenceRecorder.now(),
+                "COMMITTED", True, EvidenceRecorder.now(), "", "",
             ))
 
         return PhysicalCommitResult(
