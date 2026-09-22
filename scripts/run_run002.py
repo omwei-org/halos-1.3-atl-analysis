@@ -12,7 +12,7 @@ def main() -> None:
     gie = GIE()
     epoch = gie.grant(0)
     relay = RecordingRelay()
-    recorder = EvidenceRecorder()
+    recorder = EvidenceRecorder("run-002-evidence.jsonl")
     path = GovernedPhysicalPath(gie, env_id=0, actuator=relay, evidence=recorder)
 
     command_id = "run002-revoke-001"

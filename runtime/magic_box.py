@@ -52,6 +52,8 @@ class MagicBox:
             actuator = HostIOClient(socket_path) if socket_path else RuntimeRelay()
         self.actuator = actuator
         evidence_path = os.getenv("MAGIC_BOX_EVIDENCE_PATH")
+        if evidence_path is None:
+            raise RuntimeError("MAGIC_BOX_EVIDENCE_PATH environment variable is required for mandatory evidence recording")
         self.evidence = EvidenceRecorder(evidence_path)
         self.path = GovernedPhysicalPath(self.gie, env_id=0, actuator=self.actuator, evidence=self.evidence)
         self._commit_seq = 0

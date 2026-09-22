@@ -10,7 +10,7 @@ from poc.physical_boundary import GovernedPhysicalPath, PhysicalExecutionObject,
 
 def main() -> None:
     """Run 003: Control baseline (no revocation).
-    
+
     Pair experiment to Run 002.
     - PREPARE @ epoch 1 → ALLOW
     - Authority remains valid (no revoke)
@@ -20,7 +20,7 @@ def main() -> None:
     gie = GIE()
     epoch = gie.grant(0)
     relay = RecordingRelay()
-    recorder = EvidenceRecorder()
+    recorder = EvidenceRecorder("run-003-evidence.jsonl")
     path = GovernedPhysicalPath(gie, env_id=0, actuator=relay, evidence=recorder)
 
     command_id = "run003-control-001"
