@@ -113,7 +113,7 @@ class MagicBox:
             return encode_envelope(committed).encode("utf-8")
 
         execution = PhysicalExecutionObject(env_id=env_id, payload=payload, execution_epoch=execution_epoch)
-        result = self.path.commit(execution, safety, safety_reason, build_committed_payload)
+        result = self.path.commit(execution, safety, safety_reason, build_committed_payload, command_id=effective_command_id)
         relay_state = getattr(self.actuator, "state", None)
         return {
             "decision": result.decision.value,
