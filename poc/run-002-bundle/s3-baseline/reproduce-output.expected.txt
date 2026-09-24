@@ -1,0 +1,10 @@
+authority chain : 6 records, VERIFIED
+controller chain: 3 entries, VERIFIED
+provenance      : {'controller_repo': 'ronrey/comos-federation', 'controller_commit': '9647a2a7b9ea590652e81a22d19fd53b8751cac4', 'authority_repo': 'omwei-org/halos-1.3-atl-analysis', 'authority_commit': 'b3050fd2b3eb034f293333008257d989abe959b7', 'contract_repo': 'omwei-org/omwei-eabc', 'contract_commit': 'c0debd85'}
+
+S1_TOCTOU                    BLOCK 83d74fe8-2f5b-469f-8ba5-a0ab76c0a704  stage=COMMIT    => MATCH_REFUSED
+S3_BASELINE                  ALLOW ad09237a-b331-4d30-b004-39a19829b7af  stage=EXECUTION => MATCH
+
+S2_SHARED_COUNTER: NOT_CONSTRUCTIBLE
+
+S4_EXPIRY: NOT_SUPPORTED_NOT_OBSERVABLE

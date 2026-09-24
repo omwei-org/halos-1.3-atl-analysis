@@ -1,0 +1,153 @@
+{
+  "run": "validation-run-002",
+  "provenance": {
+    "controller_repo": "ronrey/comos-federation",
+    "controller_commit": "4076fc5e52720016bed2cce4196714b8db2e4dfc",
+    "authority_repo": "omwei-org/halos-1.3-atl-analysis",
+    "authority_commit": "b3050fd2b3eb034f293333008257d989abe959b7",
+    "contract_repo": "omwei-org/omwei-eabc",
+    "contract_commit": "c0debd85"
+  },
+  "captured_at": "2026-09-23T19:11:36.713Z",
+  "scenarios": [
+    {
+      "scenario": "S1_TOCTOU",
+      "status": "EXECUTED",
+      "prepare": {
+        "stage": "PREPARE",
+        "command_id": "4c2fee57-ff45-456b-ad74-33dc834fbd94",
+        "env_id": "recording-relay",
+        "payload": "{\"name\":\"federation_journal_read\",\"args\":{\"limit\":50}}",
+        "payload_digest": "22055b0016c31920d3ddb38d01edb288b3c5da8592cd3a4b79d1967822483fc9",
+        "authority_epoch": 1,
+        "at": "2026-09-23T19:11:36.704Z",
+        "preparation_result": "PREPARED_UNDER_VALID_AUTHORITY",
+        "evidence_ref": {
+          "kind": "verdict-chain",
+          "seq": 1,
+          "entry_hash": "97e02ba414f2e533472d65c8d9726b63519d72a460afb2849fe1081e193986a8"
+        }
+      },
+      "transition": {
+        "stage": "AUTHORITY_TRANSITION",
+        "old_authority_epoch": 1,
+        "new_authority_epoch": 2,
+        "event": "REVOKE",
+        "at": "2026-09-23T19:11:36.706Z",
+        "authority_change_class": "same-authority",
+        "evidence_ref": {
+          "kind": "none",
+          "reason": "governance act is authority-side; no controller entry"
+        }
+      },
+      "commit": {
+        "stage": "COMMIT",
+        "command_id": "4c2fee57-ff45-456b-ad74-33dc834fbd94",
+        "env_id": "recording-relay",
+        "payload_digest": "22055b0016c31920d3ddb38d01edb288b3c5da8592cd3a4b79d1967822483fc9",
+        "authority_epoch_at_decision": 2,
+        "final_authorization_outcome": "BLOCK",
+        "implementation_reason": "STALE_EPOCH",
+        "execution_outcome": "ABORTED",
+        "at": "2026-09-23T19:11:36.708Z",
+        "evidence_ref": {
+          "kind": "verdict-chain",
+          "seq": 2,
+          "entry_hash": "49f5864355fc2bbcd80be6fa66410b61ad32858581b274a7bfbe685cf64c30c7"
+        }
+      }
+    },
+    {
+      "scenario": "S3_BASELINE",
+      "status": "EXECUTED",
+      "prepare": {
+        "stage": "PREPARE",
+        "command_id": "390e44bd-75d7-460c-9870-209cd9256a2a",
+        "env_id": "recording-relay",
+        "payload": "{\"name\":\"federation_journal_read\",\"args\":{\"limit\":50}}",
+        "payload_digest": "22055b0016c31920d3ddb38d01edb288b3c5da8592cd3a4b79d1967822483fc9",
+        "authority_epoch": 3,
+        "at": "2026-09-23T19:11:36.711Z",
+        "preparation_result": "PREPARED_UNDER_VALID_AUTHORITY",
+        "evidence_ref": {
+          "kind": "verdict-chain",
+          "seq": 3,
+          "entry_hash": "5ab87821359f445e45a30ef4242b7c4e4dde0fcfc532642a9c0ac046dbb2dd48"
+        }
+      },
+      "commit": {
+        "stage": "COMMIT",
+        "command_id": "390e44bd-75d7-460c-9870-209cd9256a2a",
+        "env_id": "recording-relay",
+        "payload_digest": "22055b0016c31920d3ddb38d01edb288b3c5da8592cd3a4b79d1967822483fc9",
+        "authority_epoch_at_decision": 3,
+        "final_authorization_outcome": "ALLOW",
+        "execution_outcome": "COMMITTED",
+        "at": "2026-09-23T19:11:36.711Z",
+        "evidence_ref": {
+          "kind": "verdict-chain",
+          "seq": 3,
+          "entry_hash": "5ab87821359f445e45a30ef4242b7c4e4dde0fcfc532642a9c0ac046dbb2dd48"
+        }
+      }
+    },
+    {
+      "scenario": "S5_NEGATIVE_DIGEST_MISMATCH",
+      "status": "EXECUTED",
+      "mutation": {
+        "description": "args.limit 50 -> 51 applied to the transmitted bytes after the attested payload was fixed; command_id, env_id, epoch and authority unchanged from S3.",
+        "attested_payload_digest": "22055b0016c31920d3ddb38d01edb288b3c5da8592cd3a4b79d1967822483fc9",
+        "committed_artifact_digest": "6974161efd584b69dee44981aeaf173cfa9de106a1299d3855a1228cd8ab5a8a",
+        "transmitted_payload": "{\"name\":\"federation_journal_read\",\"args\":{\"limit\":51}}"
+      },
+      "prepare": {
+        "stage": "PREPARE",
+        "command_id": "6141586e-68cf-4511-90bd-fedadc27c1ce",
+        "env_id": "recording-relay",
+        "payload": "{\"name\":\"federation_journal_read\",\"args\":{\"limit\":50}}",
+        "payload_digest": "22055b0016c31920d3ddb38d01edb288b3c5da8592cd3a4b79d1967822483fc9",
+        "authority_epoch": 3,
+        "at": "2026-09-23T19:11:36.713Z",
+        "preparation_result": "PREPARED_UNDER_VALID_AUTHORITY",
+        "evidence_ref": {
+          "kind": "verdict-chain",
+          "seq": 4,
+          "entry_hash": "710294dcd20cc106d71d71add446926ab933ab2733dedbb690e0bc9c17607ee7"
+        }
+      },
+      "commit": {
+        "stage": "COMMIT",
+        "command_id": "6141586e-68cf-4511-90bd-fedadc27c1ce",
+        "env_id": "recording-relay",
+        "payload_digest": "22055b0016c31920d3ddb38d01edb288b3c5da8592cd3a4b79d1967822483fc9",
+        "authority_epoch_at_decision": 3,
+        "final_authorization_outcome": "ALLOW",
+        "execution_outcome": "COMMITTED",
+        "at": "2026-09-23T19:11:36.713Z",
+        "evidence_ref": {
+          "kind": "verdict-chain",
+          "seq": 4,
+          "entry_hash": "710294dcd20cc106d71d71add446926ab933ab2733dedbb690e0bc9c17607ee7"
+        }
+      }
+    },
+    {
+      "scenario": "S2_SHARED_COUNTER",
+      "status": "NOT_CONSTRUCTIBLE",
+      "status_reason": "Controller side: every epoch increment originates from revoke()/reauthorize() on the authority governing the act; no mechanism exists to advance the counter without an authority-relevant change (§3.1 feasibility condition not met). Authority side: the GIE keys AuthorityContext per env_id (halos-1.3-atl-analysis@fcdab395 poc/gie.py), so a shared global counter does not exist there either — the alternative is structurally excluded rather than untested. Per §3.1, S1 is therefore reported WITHOUT the shared-counter disambiguation having been performed experimentally."
+    },
+    {
+      "scenario": "S4_EXPIRY",
+      "status": "NOT_SUPPORTED_NOT_OBSERVABLE",
+      "status_reason": "Neither implementation has an expiry, TTL, or deadline mechanism; authority is a boolean plus a monotonic counter. Per §5, this is a capability gap (NOT SUPPORTED / NOT OBSERVABLE), explicitly distinct from UNKNOWN."
+    }
+  ],
+  "correlation": {
+    "command_id_stable": true,
+    "payload_digest_stable": true,
+    "env_id_stable": true,
+    "authority_epoch_changed": true
+  },
+  "integrity_recipe": "entry_hash = sha256(JSON.stringify([\n  seq, command_id, env_id, epoch, payload_digest, decision, reason ?? \"\", at, prev_hash\n])) over UTF-8 bytes.\nA FIXED-ORDER ARRAY, not an object: key order cannot be ambiguous.\nreason is the EMPTY STRING on ALLOW — omitted or null does NOT reproduce the hash.\nprev_hash of the first entry is 64 zeroes.",
+  "anomalies": []
+}

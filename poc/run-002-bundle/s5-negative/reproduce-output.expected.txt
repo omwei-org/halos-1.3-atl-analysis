@@ -1,0 +1,16 @@
+authority chain : 9 records, VERIFIED
+controller chain: 4 entries, VERIFIED
+provenance      : {'controller_repo': 'ronrey/comos-federation', 'controller_commit': '4076fc5e52720016bed2cce4196714b8db2e4dfc', 'authority_repo': 'omwei-org/halos-1.3-atl-analysis', 'authority_commit': 'b3050fd2b3eb034f293333008257d989abe959b7', 'contract_repo': 'omwei-org/omwei-eabc', 'contract_commit': 'c0debd85'}
+
+S1_TOCTOU                    BLOCK 4c2fee57-ff45-456b-ad74-33dc834fbd94  stage=COMMIT    => MATCH_REFUSED
+S3_BASELINE                  ALLOW 390e44bd-75d7-460c-9870-209cd9256a2a  stage=EXECUTION => MATCH
+S5_NEGATIVE_DIGEST_MISMATCH  ALLOW 6141586e-68cf-4511-90bd-fedadc27c1ce  stage=EXECUTION => DIGEST_MISMATCH (ours 22055b0016c31920d3ddb38d01edb288b3c5da8592cd3a4b79d1967822483fc9 vs committed 6974161efd584b69dee44981aeaf173cfa9de106a1299d3855a1228cd8ab5a8a)
+
+S5_NEGATIVE_DIGEST_MISMATCH declared mutation: args.limit 50 -> 51 applied to the transmitted bytes after the attested payload was fixed; command_id, env_id, epoch and authority unchanged from S3.
+  D1 attested  = 22055b0016c31920d3ddb38d01edb288b3c5da8592cd3a4b79d1967822483fc9
+  D2 committed = 6974161efd584b69dee44981aeaf173cfa9de106a1299d3855a1228cd8ab5a8a
+  D2 == sha256(transmitted bytes): True
+
+S2_SHARED_COUNTER: NOT_CONSTRUCTIBLE
+
+S4_EXPIRY: NOT_SUPPORTED_NOT_OBSERVABLE
