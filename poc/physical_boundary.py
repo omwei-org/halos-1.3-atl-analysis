@@ -234,7 +234,7 @@ class GovernedPhysicalPath:
                 self._evidence.record_effect_correlation(EffectCorrelationEvidence(
                     "EFFECT_CORRELATION", command_id, evidence.env_id,
                     evidence.action_digest, actuator_payload_digest,
-                    effect_digest, "OBSERVED", observed_at,
+                    observation, effect_digest, "OBSERVED", observed_at,
                     type(self._actuator).__name__, "", "",
                 ))
 
