@@ -29,37 +29,49 @@ class CommitEvidence:
     record_hash: str
 
 
+@dataclass(frozen=True)
+class EffectCorrelationEvidence:
+    """Integrity-protected binding between a committed action and an observation."""
+
+    stage: str
+    command_id: str
+    env_id: int
+    committed_action_digest: str
+    actuator_payload_digest: str
+    effect_digest: str
+    effect_status: str
+    observed_at: str
+    effect_source: str
+    prev_hash: str
+    record_hash: str
+
+
 class EvidenceRecorder:
     """Append-only implementation evidence sink for the Magic Box PoC.
 
     Evidence recording is mandatory: a path must be provided at initialization.
-    Each record is integrity-protected via a hash chain linking to the previous record.
+    Commit and effect-correlation records share one append-only SHA-256 hash chain.
     """
 
     GENESIS_HASH = "0000000000000000000000000000000000000000000000000000000000000000"
 
-    # Fixed field order for hash computation (excluding prev_hash and record_hash)
     _HASH_FIELD_ORDER = [
-        "stage",
-        "command_id",
-        "env_id",
-        "action_digest",
-        "execution_epoch",
-        "authority_epoch",
-        "authorization_decision",
-        "authorization_reason",
-        "safety_decision",
-        "safety_reason",
-        "commit_decision",
-        "commit_reason",
-        "execution_outcome",
-        "applied",
-        "timestamp",
+        "stage", "command_id", "env_id", "action_digest", "execution_epoch",
+        "authority_epoch", "authorization_decision", "authorization_reason",
+        "safety_decision", "safety_reason", "commit_decision", "commit_reason",
+        "execution_outcome", "applied", "timestamp",
+    ]
+
+    _EFFECT_HASH_FIELD_ORDER = [
+        "stage", "command_id", "env_id", "committed_action_digest",
+        "actuator_payload_digest", "effect_digest", "effect_status",
+        "observed_at", "effect_source",
     ]
 
     def __init__(self, path: str | Path) -> None:
         self._path = Path(path)
         self._records: list[CommitEvidence] = []
+        self._effect_records: list[EffectCorrelationEvidence] = []
         self._lock = Lock()
         self._last_hash = self.GENESIS_HASH
 
@@ -68,48 +80,46 @@ class EvidenceRecorder:
         with self._lock:
             return tuple(self._records)
 
-    def _compute_record_hash(self, evidence_dict: dict, prev_hash: str) -> str:
-        """Compute record_hash = SHA256(prev_hash + serialized_evidence_fields)."""
-        # Extract fields in fixed order, excluding hash fields
+    @property
+    def effect_records(self) -> tuple[EffectCorrelationEvidence, ...]:
+        with self._lock:
+            return tuple(self._effect_records)
+
+    def _compute_hash(self, evidence_dict: dict, prev_hash: str, fields: list[str]) -> str:
         hash_input = prev_hash
-        for field in self._HASH_FIELD_ORDER:
-            value = evidence_dict[field]
-            # Serialize each field value as compact JSON
-            field_json = json.dumps(value, separators=(",", ":"))
-            hash_input += field_json
+        for field in fields:
+            hash_input += json.dumps(evidence_dict[field], separators=(",", ":"))
         return hashlib.sha256(hash_input.encode("utf-8")).hexdigest()
 
-    def record(self, evidence: CommitEvidence) -> None:
-        """Record evidence with hash-chain integrity protection."""
-        evidence_dict = asdict(evidence)
-
-        # Remove hash fields if present (shouldn't be, but defensive)
-        evidence_dict.pop("prev_hash", None)
-        evidence_dict.pop("record_hash", None)
-
+    def _append_record(self, evidence_dict: dict, fields: list[str]) -> tuple[str, str]:
         with self._lock:
-            # Compute hash chain
             prev_hash = self._last_hash
-            record_hash = self._compute_record_hash(evidence_dict, prev_hash)
-
-            # Add hash fields to the record
+            record_hash = self._compute_hash(evidence_dict, prev_hash, fields)
             evidence_dict["prev_hash"] = prev_hash
             evidence_dict["record_hash"] = record_hash
-
-            # Reconstruct CommitEvidence with hashes
-            evidence_with_hashes = CommitEvidence(**evidence_dict)
-
-            # Serialize for persistence
             line = json.dumps(evidence_dict, sort_keys=True, separators=(",", ":"))
-
-            # Persist to disk
             self._path.parent.mkdir(parents=True, exist_ok=True)
             with self._path.open("a", encoding="utf-8") as fh:
                 fh.write(line + "\n")
-
-            # Update in-memory state
-            self._records.append(evidence_with_hashes)
             self._last_hash = record_hash
+            return prev_hash, record_hash
+
+    def record(self, evidence: CommitEvidence) -> None:
+        """Record a CommitEvidence item with hash-chain integrity protection."""
+        evidence_dict = asdict(evidence)
+        evidence_dict.pop("prev_hash", None)
+        evidence_dict.pop("record_hash", None)
+        self._append_record(evidence_dict, self._HASH_FIELD_ORDER)
+        self._records.append(CommitEvidence(**evidence_dict))
+
+    def record_effect_correlation(self, evidence: EffectCorrelationEvidence) -> None:
+        """Record an effect-correlation item on the same integrity chain."""
+        evidence_dict = asdict(evidence)
+        evidence_dict.pop("prev_hash", None)
+        evidence_dict.pop("record_hash", None)
+        evidence_dict["record_type"] = "EFFECT_CORRELATION"
+        self._append_record(evidence_dict, self._EFFECT_HASH_FIELD_ORDER)
+        self._effect_records.append(EffectCorrelationEvidence(**evidence_dict))
 
     @staticmethod
     def now() -> str:
