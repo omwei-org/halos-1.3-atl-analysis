@@ -38,6 +38,7 @@ class EffectCorrelationEvidence:
     env_id: int
     committed_action_digest: str
     actuator_payload_digest: str
+    observation: dict[str, object]
     effect_digest: str
     effect_status: str
     observed_at: str
@@ -63,8 +64,8 @@ class EvidenceRecorder:
     ]
 
     _EFFECT_HASH_FIELD_ORDER = [
-        "stage", "command_id", "env_id", "committed_action_digest",
-        "actuator_payload_digest", "effect_digest", "effect_status",
+        "record_type", "stage", "command_id", "env_id", "committed_action_digest",
+        "actuator_payload_digest", "observation", "effect_digest", "effect_status",
         "observed_at", "effect_source",
     ]
 
