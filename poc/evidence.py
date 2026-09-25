@@ -117,9 +117,12 @@ class EvidenceRecorder:
         evidence_dict = asdict(evidence)
         evidence_dict.pop("prev_hash", None)
         evidence_dict.pop("record_hash", None)
-        evidence_dict["record_type"] = "EFFECT_CORRELATION"
-        self._append_record(evidence_dict, self._EFFECT_HASH_FIELD_ORDER)
-        self._effect_records.append(EffectCorrelationEvidence(**evidence_dict))
+        record_dict = dict(evidence_dict)
+        record_dict["record_type"] = "EFFECT_CORRELATION"
+        self._append_record(record_dict, self._EFFECT_HASH_FIELD_ORDER)
+        self._effect_records.append(EffectCorrelationEvidence(
+            **{key: record_dict[key] for key in asdict(evidence).keys()}
+        ))
 
     @staticmethod
     def now() -> str:
