@@ -185,6 +185,10 @@ def test_effect_correlation_binds_committed_payload_and_observation():
         assert effect.actuator_payload_digest == execution.action_digest
         assert effect.effect_status == "OBSERVED"
         assert effect.effect_source == "RecordingRelay"
+        assert effect.observation == {
+            "applied_payload_digest": execution.action_digest,
+            "state": True,
+        }
         assert effect.prev_hash == recorder.records[-1].record_hash
         assert effect.record_hash != effect.prev_hash
         assert relay.state is True
