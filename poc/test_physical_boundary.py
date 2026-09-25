@@ -163,3 +163,54 @@ def test_auto_command_id_is_shared_by_result_and_evidence():
         assert result.decision is Decision.ALLOW
         assert result.command_id is not None
         assert all(r.command_id == result.command_id for r in recorder.records)
+
+
+def test_effect_correlation_binds_committed_payload_and_observation():
+    from poc.evidence import EvidenceRecorder
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        gie = authorized_gie()
+        relay = RecordingRelay()
+        recorder = EvidenceRecorder(Path(tmpdir) / "evidence.jsonl")
+        path = GovernedPhysicalPath(gie, env_id=0, actuator=relay, evidence=recorder)
+        execution = PhysicalExecutionObject(0, b"RELAY:ON", gie.current_epoch(0))
+
+        result = path.commit(execution, command_id="run004-a-001")
+
+        assert result.decision is Decision.ALLOW
+        assert len(recorder.effect_records) == 1
+        effect = recorder.effect_records[0]
+        assert effect.command_id == "run004-a-001"
+        assert effect.committed_action_digest == execution.action_digest
+        assert effect.actuator_payload_digest == execution.action_digest
+        assert effect.effect_status == "OBSERVED"
+        assert effect.effect_source == "RecordingRelay"
+        assert effect.prev_hash == recorder.records[-1].record_hash
+        assert effect.record_hash != effect.prev_hash
+        assert relay.state is True
+
+
+def test_effect_correlation_exposes_commit_payload_transformation():
+    from poc.evidence import EvidenceRecorder
+    from poc.execution_identity import digest_bytes
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        gie = authorized_gie()
+        relay = RecordingRelay()
+        recorder = EvidenceRecorder(Path(tmpdir) / "evidence.jsonl")
+        path = GovernedPhysicalPath(gie, env_id=0, actuator=relay, evidence=recorder)
+        execution = PhysicalExecutionObject(0, b"RELAY:ON", gie.current_epoch(0))
+
+        result = path.commit(
+            execution,
+            commit_payload_factory=lambda payload, authority: b"RELAY:OFF",
+            command_id="run004-b-001",
+        )
+
+        assert result.decision is Decision.ALLOW
+        effect = recorder.effect_records[0]
+        assert effect.committed_action_digest == execution.action_digest
+        assert effect.actuator_payload_digest == digest_bytes(b"RELAY:OFF")
+        assert effect.actuator_payload_digest != effect.committed_action_digest
+        assert relay.applied_payloads == [b"RELAY:OFF"]
+        assert relay.state is False
