@@ -112,10 +112,10 @@ class DownstreamEffectSink:
         with self._lock:
             found = self.find(command_id)
             return DownstreamObservation(
-            ReconciliationStatus.APPLIED if found else ReconciliationStatus.ABSENT,
-            tuple(payload for _, payload in found),
-            authoritative=True,
-        )
+                ReconciliationStatus.APPLIED if found else ReconciliationStatus.ABSENT,
+                tuple(payload for _, payload in found),
+                authoritative=True,
+            )
 
     @property
     def effect_count(self) -> int:
