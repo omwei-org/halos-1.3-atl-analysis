@@ -253,27 +253,43 @@ def test_guarded_enqueue_positive_control():
 
 
 
+class GuardedPreparedQueue:
+    """Queue adapter that crosses the effect boundary only through the guard."""
+
+    def __init__(self, path: GovernedPhysicalPath) -> None:
+        self.path = path
+        self.pending = []
+
+    def enqueue(self, prepared) -> None:
+        self.pending.append(prepared)
+
+    def release(self):
+        results = [self.path.commit_prepared(item) for item in self.pending]
+        self.pending.clear()
+        return results
+
+
 def test_guarded_queued_release_after_revocation_has_zero_effects():
-    """T1: queued prepared work is revalidated when the queue is released."""
+    """T1: enqueue -> revoke -> release must produce zero downstream effects."""
     gie = GIE()
     epoch = gie.grant(0)
     relay = RecordingRelay()
     path = GovernedPhysicalPath(gie, env_id=0, actuator=relay)
+    queue = GuardedPreparedQueue(path)
 
     execution = PhysicalExecutionObject(0, b"RELAY:ON", epoch)
     prepared = path.prepare(execution, command_id="queued-revoke-005")
-
-    queue = [prepared]
-    assert len(queue) == 1
+    queue.enqueue(prepared)
+    assert len(queue.pending) == 1
 
     gie.revoke(0)
 
-    results = [path.commit_prepared(item) for item in queue]
-    queue.clear()
+    results = queue.release()
 
     assert len(results) == 1
     assert results[0].decision is Decision.BLOCK
     assert results[0].applied is False
+    assert len(queue.pending) == 0
     assert len(relay.applied_payloads) == 0
     assert relay.state is False
 
