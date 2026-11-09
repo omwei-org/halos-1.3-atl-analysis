@@ -30,6 +30,7 @@ class ReconciliationStatus(Enum):
 class DownstreamObservation:
     status: ReconciliationStatus
     payloads: tuple[bytes, ...] = ()
+    authoritative: bool = False
 
 
 class DownstreamReconciliation(Protocol):
@@ -42,6 +43,9 @@ class DownstreamReconciliation(Protocol):
         establish that no matching effect occurred;
       * UNKNOWN whenever visibility, retention, consistency, or identity is
         insufficient to decide.
+
+    APPLIED and ABSENT must carry authoritative=True. A non-authoritative
+    observation is treated as UNKNOWN regardless of its claimed status.
 
     ABSENT must not be inferred from a timeout, transport error, stale replica,
     incomplete query, or missing telemetry. The lookup must cover every path by
@@ -72,6 +76,7 @@ class DownstreamEffectSink:
         return DownstreamObservation(
             ReconciliationStatus.APPLIED if found else ReconciliationStatus.ABSENT,
             tuple(payload for _, payload in found),
+            authoritative=True,
         )
 
     @property
@@ -110,6 +115,7 @@ class SQLiteDownstreamEffectSink:
         return DownstreamObservation(
             ReconciliationStatus.APPLIED if payloads else ReconciliationStatus.ABSENT,
             payloads,
+            authoritative=True,
         )
 
     @property
@@ -217,13 +223,18 @@ def recover_before_retry(
     local.mark_interrupted_unknown()
     observed = sink.lookup(command_id)
 
-    if observed.status is ReconciliationStatus.UNKNOWN:
-        # An inconclusive lookup cannot authorize another Protected Effect.
+    if (
+        observed.status is ReconciliationStatus.UNKNOWN
+        or not observed.authoritative
+    ):
+        # An inconclusive or non-authoritative lookup cannot authorize an effect.
         local.record(command_id, "UNKNOWN")
         return "BLOCKED_DOWNSTREAM_STATE_UNKNOWN"
 
     if observed.status is ReconciliationStatus.APPLIED:
-        if not observed.payloads or any(item != payload for item in observed.payloads):
+        if len(observed.payloads) != 1:
+            raise AssertionError("expected exactly one effect for stable command_id")
+        if observed.payloads[0] != payload:
             raise AssertionError("command_id collision or downstream payload mismatch")
         local.record(command_id, "SUCCEEDED")
         return "RECONCILED_ALREADY_APPLIED"
@@ -309,7 +320,7 @@ def test_recovery_retries_only_after_authoritative_absence(tmp_path):
 def test_recovery_does_not_retry_when_downstream_lookup_is_unknown(tmp_path):
     class UnavailableDownstream:
         def lookup(self, command_id: str) -> DownstreamObservation:
-            return DownstreamObservation(ReconciliationStatus.UNKNOWN)
+            return DownstreamObservation(ReconciliationStatus.UNKNOWN, authoritative=False)
 
         def apply(self, command_id: str, payload: bytes) -> None:
             raise AssertionError("UNKNOWN lookup must never authorize an effect")
@@ -338,3 +349,94 @@ def test_duplicate_downstream_effect_is_visible_to_independent_counter():
     assert sink.invocation_count == 2
     assert sink.effect_count == 2
     assert len(sink.find(command_id)) == 2
+
+
+
+def test_non_authoritative_absence_never_authorizes_retry(tmp_path):
+    class StaleReplica:
+        def __init__(self):
+            self.apply_calls = 0
+
+        def lookup(self, command_id: str) -> DownstreamObservation:
+            # A stale/incomplete view claims ABSENT but cannot establish it.
+            return DownstreamObservation(
+                ReconciliationStatus.ABSENT, authoritative=False
+            )
+
+        def apply(self, command_id: str, payload: bytes) -> None:
+            self.apply_calls += 1
+
+    sink = StaleReplica()
+    local = LocalOperationStore(tmp_path / "operations.sqlite")
+    command_id = "stale-absence-006"
+    local.record(command_id, "IN_PROGRESS")
+
+    result = recover_before_retry(command_id, b"RELAY:ON", sink, local)
+
+    assert result == "BLOCKED_DOWNSTREAM_STATE_UNKNOWN"
+    assert local.outcome(command_id) == "UNKNOWN"
+    assert sink.apply_calls == 0
+    local.close()
+
+
+def test_non_authoritative_applied_observation_does_not_finalize_success(tmp_path):
+    class IncompleteObserver:
+        def lookup(self, command_id: str) -> DownstreamObservation:
+            return DownstreamObservation(
+                ReconciliationStatus.APPLIED,
+                (b"RELAY:ON",),
+                authoritative=False,
+            )
+
+        def apply(self, command_id: str, payload: bytes) -> None:
+            raise AssertionError("non-authoritative observation must not trigger retry")
+
+    local = LocalOperationStore(tmp_path / "operations.sqlite")
+    command_id = "incomplete-applied-007"
+    local.record(command_id, "IN_PROGRESS")
+
+    result = recover_before_retry(
+        command_id, b"RELAY:ON", IncompleteObserver(), local
+    )
+
+    assert result == "BLOCKED_DOWNSTREAM_STATE_UNKNOWN"
+    assert local.outcome(command_id) == "UNKNOWN"
+    local.close()
+
+
+def test_duplicate_applied_records_are_not_silently_reconciled(tmp_path):
+    sink = DownstreamEffectSink()
+    local = LocalOperationStore(tmp_path / "operations.sqlite")
+    command_id = "duplicate-reconcile-008"
+    sink.apply(command_id, b"RELAY:ON")
+    sink.apply(command_id, b"RELAY:ON")
+    local.record(command_id, "IN_PROGRESS")
+
+    try:
+        recover_before_retry(command_id, b"RELAY:ON", sink, local)
+    except AssertionError as exc:
+        assert "exactly one effect" in str(exc)
+    else:
+        raise AssertionError("duplicate effects must not be reconciled as one success")
+
+    assert local.outcome(command_id) == "UNKNOWN"
+    assert sink.effect_count == 2
+    local.close()
+
+
+def test_repeated_recovery_after_applied_effect_does_not_duplicate(tmp_path):
+    sink = DownstreamEffectSink()
+    local = LocalOperationStore(tmp_path / "operations.sqlite")
+    command_id = "repeat-recovery-009"
+    sink.apply(command_id, b"RELAY:ON")
+    local.record(command_id, "IN_PROGRESS")
+
+    first = recover_before_retry(command_id, b"RELAY:ON", sink, local)
+    second = recover_before_retry(command_id, b"RELAY:ON", sink, local)
+
+    assert first == "RECONCILED_ALREADY_APPLIED"
+    assert second == "RECONCILED_ALREADY_APPLIED"
+    assert local.outcome(command_id) == "SUCCEEDED"
+    assert sink.effect_count == 1
+    assert sink.invocation_count == 1
+    local.close()
