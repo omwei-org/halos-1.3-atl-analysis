@@ -32,6 +32,7 @@ class DownstreamObservation:
     status: ReconciliationStatus
     payloads: tuple[bytes, ...] = ()
     authoritative: bool = False
+    created: bool = False
 
 
 class DownstreamReconciliation(Protocol):
@@ -91,7 +92,8 @@ class DownstreamEffectSink:
         # The check and effect are one atomic critical section in this model.
         with self._lock:
             found = self.find(command_id)
-            if not found:
+            created = not found
+            if created:
                 self.invocation_count += 1
                 self.effects.append((command_id, payload))
                 found = [payload]
@@ -99,6 +101,7 @@ class DownstreamEffectSink:
                 ReconciliationStatus.APPLIED,
                 tuple(found),
                 authoritative=True,
+                created=created,
             )
 
     def find(self, command_id: str) -> list[tuple[str, bytes]]:
@@ -156,6 +159,7 @@ class SQLiteDownstreamEffectSink:
                     ReconciliationStatus.APPLIED,
                     tuple(bytes(row[0]) for row in rows),
                     authoritative=True,
+                    created=False,
                 )
             self._db.execute(
                 "INSERT INTO effects(command_id, payload) VALUES (?, ?)",
@@ -163,7 +167,10 @@ class SQLiteDownstreamEffectSink:
             )
             self._db.commit()
             return DownstreamObservation(
-                ReconciliationStatus.APPLIED, (payload,), authoritative=True
+                ReconciliationStatus.APPLIED,
+                (payload,),
+                authoritative=True,
+                created=True,
             )
         except Exception:
             self._db.rollback()
@@ -324,7 +331,11 @@ def recover_before_retry(
         return "RETRY_OUTCOME_UNKNOWN"
 
     local.record(command_id, "SUCCEEDED")
-    return "RETRIED_AFTER_CONFIRMED_ABSENCE"
+    return (
+        "RETRIED_AFTER_CONFIRMED_ABSENCE"
+        if applied.created
+        else "RECONCILED_ALREADY_APPLIED"
+    )
 
 
 def test_crash_after_effect_recovers_persisted_outcome_as_unknown(tmp_path):
