@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from enum import Enum
+from threading import RLock
 from hashlib import sha256
 from typing import Optional
 
@@ -96,38 +97,51 @@ class GIE:
     def __init__(self, default_epoch: int = 0) -> None:
         self._ctx: dict[int, AuthorityContext] = {}
         self._default_epoch = default_epoch
+        # Shared serialization point for authority mutation and effect commit.
+        self._lock = RLock()
+
+    def synchronized(self):
+        """Hold the authority lock across final validation and downstream effect.
+
+        Callers must keep the critical section limited to the actual commit
+        boundary. Revocation/grant operations serialize on the same lock.
+        """
+        return self._lock
 
     def grant(self, env_id: int, epoch: Optional[int] = None) -> int:
         """Issue or renew authority and return its epoch."""
-        if epoch is None:
-            current = self._ctx.get(env_id)
-            base = current.epoch if current is not None else self._default_epoch
-            epoch = base + 1
-        self._ctx[env_id] = AuthorityContext(epoch=epoch, revoked=False)
-        return epoch
+        with self._lock:
+            if epoch is None:
+                current = self._ctx.get(env_id)
+                base = current.epoch if current is not None else self._default_epoch
+                epoch = base + 1
+            self._ctx[env_id] = AuthorityContext(epoch=epoch, revoked=False)
+            return epoch
 
     def revoke(self, env_id: int) -> None:
         """Revoke authority and advance the governance epoch exactly once."""
-        current = self._ctx.get(env_id)
-        if current is None:
+        with self._lock:
+            current = self._ctx.get(env_id)
+            if current is None:
+                self._ctx[env_id] = AuthorityContext(
+                    epoch=self._default_epoch + 1,
+                    revoked=True,
+                )
+                return
+
+            # Revocation is idempotent: repeating it does not advance the epoch again.
+            if current.revoked:
+                return
+
             self._ctx[env_id] = AuthorityContext(
-                epoch=self._default_epoch + 1,
+                epoch=current.epoch + 1,
                 revoked=True,
             )
-            return
-
-        # Revocation is idempotent: repeating it does not advance the epoch again.
-        if current.revoked:
-            return
-
-        self._ctx[env_id] = AuthorityContext(
-            epoch=current.epoch + 1,
-            revoked=True,
-        )
 
     def current_epoch(self, env_id: int) -> int:
-        current = self._ctx.get(env_id)
-        return current.epoch if current is not None else self._default_epoch
+        with self._lock:
+            current = self._ctx.get(env_id)
+            return current.epoch if current is not None else self._default_epoch
 
     def check_evidence(
         self,
