@@ -476,7 +476,7 @@ def test_retry_exception_after_effect_is_reconciled_before_any_further_retry(tmp
     first = recover_before_retry(command_id, b"RELAY:ON", sink, local)
     assert first == "RETRY_OUTCOME_UNKNOWN"
     assert local.outcome(command_id) == "UNKNOWN"
-    assert sink.effect_count if hasattr(sink, "effect_count") else len(sink.effects) == 1
+    assert len(sink.effects) == 1
     assert sink.invocation_count == 1
 
     second = recover_before_retry(command_id, b"RELAY:ON", sink, local)
