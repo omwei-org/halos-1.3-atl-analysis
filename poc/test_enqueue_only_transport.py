@@ -46,9 +46,10 @@ class EnqueueOnlyTransport(ActuatorAdapter):
     is checked only before enqueueing, not at the actual effect boundary.
     """
 
-    def __init__(self) -> None:
+    def __init__(self, effect_sink: RecordingRelay) -> None:
         self.queue: list[QueuedOperation] = []
         self.executed_operations: list[QueuedOperation] = []
+        self.effect_sink = effect_sink
         self._released = False
 
     def apply(self, payload: bytes) -> None:
@@ -56,8 +57,7 @@ class EnqueueOnlyTransport(ActuatorAdapter):
 
         Operations are queued instead of executed synchronously.
         """
-        # For the negative control test, we'll use a different interface
-        pass
+        raise RuntimeError("enqueue-only transport does not support synchronous apply")
 
     def enqueue(
         self,
@@ -85,7 +85,8 @@ class EnqueueOnlyTransport(ActuatorAdapter):
         self._released = True
         for op in self.queue:
             # Simulate execution without revalidating authority
-            # This is the failure mode: stale authority can execute
+            # This is the failure mode: stale authority causes a real simulated effect.
+            self.effect_sink.apply(op.execution.payload)
             self.executed_operations.append(op)
         self.queue.clear()
 
@@ -105,8 +106,8 @@ def test_non_conformant_enqueue_only_transport_failure_mode():
     gie = GIE()
     epoch = gie.grant(0)
 
-    transport = EnqueueOnlyTransport()
-    gate = CommitGate()
+    effect_sink = RecordingRelay()
+    transport = EnqueueOnlyTransport(effect_sink)
 
     # Prepare execution with current authority
     execution = PhysicalExecutionObject(0, b"RELAY:ON", epoch)
@@ -140,6 +141,10 @@ def test_non_conformant_enqueue_only_transport_failure_mode():
     executed_op = transport.executed_operations[0]
     assert executed_op.authority.decision is Decision.ALLOW
     assert executed_op.authority.authority_epoch == epoch  # STALE epoch
+    # Independent downstream measurement: the unsafe path caused a real effect.
+    assert len(effect_sink.applied_payloads) == 1
+    assert effect_sink.applied_payloads[0] == b"RELAY:ON"
+    assert effect_sink.state is True
 
     # Verify temporal ordering
     assert enqueue_time < revoke_time < release_time
@@ -245,6 +250,48 @@ def test_guarded_enqueue_positive_control():
     assert result.applied is True
     assert len(relay.applied_payloads) == 1
     assert relay.state is True
+
+
+
+class GuardedPreparedQueue:
+    """Queue adapter that crosses the effect boundary only through the guard."""
+
+    def __init__(self, path: GovernedPhysicalPath) -> None:
+        self.path = path
+        self.pending = []
+
+    def enqueue(self, prepared) -> None:
+        self.pending.append(prepared)
+
+    def release(self):
+        results = [self.path.commit_prepared(item) for item in self.pending]
+        self.pending.clear()
+        return results
+
+
+def test_guarded_queued_release_after_revocation_has_zero_effects():
+    """T1: enqueue -> revoke -> release must produce zero downstream effects."""
+    gie = GIE()
+    epoch = gie.grant(0)
+    relay = RecordingRelay()
+    path = GovernedPhysicalPath(gie, env_id=0, actuator=relay)
+    queue = GuardedPreparedQueue(path)
+
+    execution = PhysicalExecutionObject(0, b"RELAY:ON", epoch)
+    prepared = path.prepare(execution, command_id="queued-revoke-005")
+    queue.enqueue(prepared)
+    assert len(queue.pending) == 1
+
+    gie.revoke(0)
+
+    results = queue.release()
+
+    assert len(results) == 1
+    assert results[0].decision is Decision.BLOCK
+    assert results[0].applied is False
+    assert len(queue.pending) == 0
+    assert len(relay.applied_payloads) == 0
+    assert relay.state is False
 
 
 if __name__ == "__main__":
