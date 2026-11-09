@@ -244,7 +244,13 @@ def recover_before_retry(
 
     # ABSENT authorizes retry only under the explicit lookup contract above.
     local.record(command_id, "RETRY_AUTHORIZED")
-    sink.apply(command_id, payload)  # type: ignore[attr-defined]
+    try:
+        sink.apply(command_id, payload)  # type: ignore[attr-defined]
+    except Exception:
+        # The apply call itself may have crossed the effect boundary before failing.
+        # Never interpret its exception as proof of absence; reconcile again.
+        local.record(command_id, "UNKNOWN")
+        return "RETRY_OUTCOME_UNKNOWN"
     local.record(command_id, "SUCCEEDED")
     return "RETRIED_AFTER_CONFIRMED_ABSENCE"
 
@@ -438,5 +444,44 @@ def test_repeated_recovery_after_applied_effect_does_not_duplicate(tmp_path):
     assert second == "RECONCILED_ALREADY_APPLIED"
     assert local.outcome(command_id) == "SUCCEEDED"
     assert sink.effect_count == 1
+    assert sink.invocation_count == 1
+    local.close()
+
+
+
+def test_retry_exception_after_effect_is_reconciled_before_any_further_retry(tmp_path):
+    class ApplyThenRaise:
+        def __init__(self):
+            self.effects = []
+            self.invocation_count = 0
+
+        def lookup(self, command_id: str) -> DownstreamObservation:
+            matches = [payload for key, payload in self.effects if key == command_id]
+            return DownstreamObservation(
+                ReconciliationStatus.APPLIED if matches else ReconciliationStatus.ABSENT,
+                tuple(matches),
+                authoritative=True,
+            )
+
+        def apply(self, command_id: str, payload: bytes) -> None:
+            self.invocation_count += 1
+            self.effects.append((command_id, payload))
+            raise RuntimeError("transport failed after downstream effect")
+
+    sink = ApplyThenRaise()
+    local = LocalOperationStore(tmp_path / "operations.sqlite")
+    command_id = "apply-then-raise-010"
+    local.record(command_id, "IN_PROGRESS")
+
+    first = recover_before_retry(command_id, b"RELAY:ON", sink, local)
+    assert first == "RETRY_OUTCOME_UNKNOWN"
+    assert local.outcome(command_id) == "UNKNOWN"
+    assert sink.effect_count if hasattr(sink, "effect_count") else len(sink.effects) == 1
+    assert sink.invocation_count == 1
+
+    second = recover_before_retry(command_id, b"RELAY:ON", sink, local)
+    assert second == "RECONCILED_ALREADY_APPLIED"
+    assert local.outcome(command_id) == "SUCCEEDED"
+    assert len(sink.effects) == 1
     assert sink.invocation_count == 1
     local.close()
