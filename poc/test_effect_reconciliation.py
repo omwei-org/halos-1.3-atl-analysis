@@ -93,14 +93,19 @@ def test_crash_after_effect_leaves_local_outcome_unknown_on_recovery():
     else:
         raise AssertionError("crash injection did not occur")
 
-    # The durable journal has no terminal outcome at the crash boundary.
-    assert local.outcomes[command_id] == "IN_PROGRESS"
+    # The process stopped with a non-terminal journal entry. Reconstruct a new
+    # store from its persisted snapshot to model a process restart; the sink is
+    # independently retained by the downstream system.
+    persisted_snapshot = dict(local.outcomes)
+    restarted_local = LocalOperationStore(outcomes=persisted_snapshot)
+    assert restarted_local is not local
+    assert restarted_local.outcomes[command_id] == "IN_PROGRESS"
     assert sink.effect_count == 1
     assert sink.find(command_id) == [(command_id, b"RELAY:ON")]
 
-    # Simulate restart recovery: interrupted work becomes UNKNOWN, not FAILED.
-    mark_interrupted_operations_unknown(local)
-    assert local.outcomes[command_id] == "UNKNOWN"
+    # Recovery, not the crashed execution path, maps interrupted work to UNKNOWN.
+    mark_interrupted_operations_unknown(restarted_local)
+    assert restarted_local.outcomes[command_id] == "UNKNOWN"
 
 
 def test_recovery_reconciles_before_retry_and_prevents_duplicate_effect():
