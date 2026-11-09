@@ -55,8 +55,17 @@ def test_revoke_serializes_behind_commit_already_inside_effect_boundary():
     revoke_thread.start()
     assert revoke_started.wait(timeout=3)
 
-    # The effect has entered the critical section; revoke cannot linearize yet.
-    assert not revoke_completed.wait(timeout=0.05)
+    # Verify directly that the commit thread still owns the shared RLock while
+    # the downstream effect is blocked. This avoids relying only on scheduler
+    # timing to infer that revocation is serialized behind the effect.
+    lock = gie.synchronized()
+    acquired_during_apply = lock.acquire(blocking=False)
+    if acquired_during_apply:
+        lock.release()
+    assert not acquired_during_apply, "commit did not hold the GIE lock during actuator apply"
+
+    # The revocation thread has been started; release the effect and let both
+    # operations complete in the lock's serialized order.
     actuator.allow_apply.set()
 
     commit_thread.join(timeout=3)
