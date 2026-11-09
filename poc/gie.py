@@ -210,7 +210,7 @@ class GIE:
             execution_digest=actual_digest,
         )
 
-    def check(
+    def _check_unlocked(
         self,
         env_id: int,
         action: object,
@@ -250,7 +250,34 @@ class GIE:
 
         return CheckResult(Decision.ALLOW, "authorized", env_id, action_epoch, ctx.epoch, digest)
 
+    def check(
+        self,
+        env_id: int,
+        action: object,
+        action_epoch: int,
+        authority_context: Optional[AuthorityContext] = None,
+        execution_digest: Optional[str] = None,
+    ) -> CheckResult:
+        """Read authority state under the shared serialization lock."""
+        with self._lock:
+            return self._check_unlocked(
+                env_id, action, action_epoch, authority_context, execution_digest
+            )
+
     def revalidate(
+        self,
+        env_id: int,
+        authority: CheckResult,
+        action: object,
+        execution_digest: Optional[str] = None,
+    ) -> CheckResult:
+        """Revalidate authority while serialized with grant, revoke, and commit."""
+        with self._lock:
+            return self._revalidate_unlocked(
+                env_id, authority, action, execution_digest
+            )
+
+    def _revalidate_unlocked(
         self,
         env_id: int,
         authority: CheckResult,
@@ -299,3 +326,4 @@ class GIE:
             )
 
         return fresh
+
