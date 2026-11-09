@@ -133,61 +133,74 @@ class GovernedPhysicalPath:
         self, prepared: PreparedPhysicalExecution
     ) -> PhysicalCommitResult:
         """Revalidate authority and cross the physical-effect boundary if allowed."""
-        execution = prepared.execution
-        evidence = prepared.evidence
-        safety = prepared.safety
-        command_id = prepared.command_id
+        # Serialize revalidation, final gate, and actuator effect against revoke.
+        with self._gie.synchronized():
+            execution = prepared.execution
+            evidence = prepared.evidence
+            safety = prepared.safety
+            command_id = prepared.command_id
 
-        # TOCTOU defense: authority is re-read immediately before the final gate.
-        authority = self._gie.revalidate(
-            env_id=evidence.env_id,
-            authority=prepared.authority,
-            action=None,
-            execution_digest=evidence.action_digest,
-        )
+            # TOCTOU defense: authority is re-read immediately before the final gate.
+            authority = self._gie.revalidate(
+                env_id=evidence.env_id,
+                authority=prepared.authority,
+                action=None,
+                execution_digest=evidence.action_digest,
+            )
 
-        if self._evidence is not None:
-            self._evidence.record(CommitEvidence(
-                "FINAL_AUTHORITY_CHECK", command_id, evidence.env_id,
-                evidence.action_digest, execution.execution_epoch,
-                authority.authority_epoch, authority.decision.value,
-                authority.reason, safety.decision.value, safety.reason,
-                None, None, None, False, EvidenceRecorder.now(), "", "",
-            ))
-
-        decision = self._gate.commit(
-            env_id=self._env_id,
-            action_digest=execution.action_digest,
-            authority=authority,
-            safety=safety,
-        )
-
-        if decision.decision is Decision.BLOCK:
             if self._evidence is not None:
                 self._evidence.record(CommitEvidence(
-                    "COMMIT", command_id, evidence.env_id,
+                    "FINAL_AUTHORITY_CHECK", command_id, evidence.env_id,
                     evidence.action_digest, execution.execution_epoch,
-                    decision.authority_epoch, authority.decision.value,
+                    authority.authority_epoch, authority.decision.value,
                     authority.reason, safety.decision.value, safety.reason,
-                    decision.decision.value, decision.reason,
-                    "NOT_ATTEMPTED", False, EvidenceRecorder.now(), "", "",
+                    None, None, None, False, EvidenceRecorder.now(), "", "",
                 ))
-            return PhysicalCommitResult(
-                Decision.BLOCK, decision.reason, execution.action_digest,
-                execution.execution_epoch, decision.authority_epoch,
-                False, command_id,
+
+            decision = self._gate.commit(
+                env_id=self._env_id,
+                action_digest=execution.action_digest,
+                authority=authority,
+                safety=safety,
             )
 
-        # The commit payload is constructed only after the final gate decision.
-        actuator_payload = execution.payload
-        if prepared.commit_payload_factory is not None:
-            actuator_payload = prepared.commit_payload_factory(
-                execution.payload, authority
-            )
+            if decision.decision is Decision.BLOCK:
+                if self._evidence is not None:
+                    self._evidence.record(CommitEvidence(
+                        "COMMIT", command_id, evidence.env_id,
+                        evidence.action_digest, execution.execution_epoch,
+                        decision.authority_epoch, authority.decision.value,
+                        authority.reason, safety.decision.value, safety.reason,
+                        decision.decision.value, decision.reason,
+                        "NOT_ATTEMPTED", False, EvidenceRecorder.now(), "", "",
+                    ))
+                return PhysicalCommitResult(
+                    Decision.BLOCK, decision.reason, execution.action_digest,
+                    execution.execution_epoch, decision.authority_epoch,
+                    False, command_id,
+                )
 
-        try:
-            self._actuator.apply(actuator_payload)
-        except Exception:
+            # The commit payload is constructed only after the final gate decision.
+            actuator_payload = execution.payload
+            if prepared.commit_payload_factory is not None:
+                actuator_payload = prepared.commit_payload_factory(
+                    execution.payload, authority
+                )
+
+            try:
+                self._actuator.apply(actuator_payload)
+            except Exception:
+                if self._evidence is not None:
+                    self._evidence.record(CommitEvidence(
+                        "EXECUTION", command_id, evidence.env_id,
+                        evidence.action_digest, execution.execution_epoch,
+                        decision.authority_epoch, authority.decision.value,
+                        authority.reason, safety.decision.value, safety.reason,
+                        decision.decision.value, decision.reason,
+                        "FAILED", False, EvidenceRecorder.now(), "", "",
+                    ))
+                raise
+
             if self._evidence is not None:
                 self._evidence.record(CommitEvidence(
                     "EXECUTION", command_id, evidence.env_id,
@@ -195,25 +208,14 @@ class GovernedPhysicalPath:
                     decision.authority_epoch, authority.decision.value,
                     authority.reason, safety.decision.value, safety.reason,
                     decision.decision.value, decision.reason,
-                    "FAILED", False, EvidenceRecorder.now(), "", "",
+                    "COMMITTED", True, EvidenceRecorder.now(), "", "",
                 ))
-            raise
 
-        if self._evidence is not None:
-            self._evidence.record(CommitEvidence(
-                "EXECUTION", command_id, evidence.env_id,
-                evidence.action_digest, execution.execution_epoch,
-                decision.authority_epoch, authority.decision.value,
-                authority.reason, safety.decision.value, safety.reason,
-                decision.decision.value, decision.reason,
-                "COMMITTED", True, EvidenceRecorder.now(), "", "",
-            ))
-
-        return PhysicalCommitResult(
-            Decision.ALLOW, decision.reason, execution.action_digest,
-            execution.execution_epoch, decision.authority_epoch,
-            True, command_id,
-        )
+            return PhysicalCommitResult(
+                Decision.ALLOW, decision.reason, execution.action_digest,
+                execution.execution_epoch, decision.authority_epoch,
+                True, command_id,
+            )
 
     def commit(
         self,
