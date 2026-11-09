@@ -252,5 +252,31 @@ def test_guarded_enqueue_positive_control():
     assert relay.state is True
 
 
+
+def test_guarded_queued_release_after_revocation_has_zero_effects():
+    """T1: queued prepared work is revalidated when the queue is released."""
+    gie = GIE()
+    epoch = gie.grant(0)
+    relay = RecordingRelay()
+    path = GovernedPhysicalPath(gie, env_id=0, actuator=relay)
+
+    execution = PhysicalExecutionObject(0, b"RELAY:ON", epoch)
+    prepared = path.prepare(execution, command_id="queued-revoke-005")
+
+    queue = [prepared]
+    assert len(queue) == 1
+
+    gie.revoke(0)
+
+    results = [path.commit_prepared(item) for item in queue]
+    queue.clear()
+
+    assert len(results) == 1
+    assert results[0].decision is Decision.BLOCK
+    assert results[0].applied is False
+    assert len(relay.applied_payloads) == 0
+    assert relay.state is False
+
+
 if __name__ == "__main__":
     raise SystemExit("Run with pytest: pytest poc/test_enqueue_only_transport.py")
