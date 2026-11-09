@@ -1,10 +1,13 @@
 """Crash/reconciliation tests with independent downstream effect accounting.
 
-Classification: deterministic software simulation; not physical actuator evidence.
+The local journal uses SQLite to exercise persistence across store reopen.
+The downstream sink remains a deterministic software model, not a real actuator.
 """
 from __future__ import annotations
 
+import sqlite3
 from dataclasses import dataclass, field
+from pathlib import Path
 
 
 class SimulatedProcessCrash(BaseException):
@@ -13,7 +16,7 @@ class SimulatedProcessCrash(BaseException):
 
 @dataclass
 class DownstreamEffectSink:
-    """Independent observer/actuator model; it does not trust caller outcomes."""
+    """Independent in-memory observer/actuator model."""
 
     effects: list[tuple[str, bytes]] = field(default_factory=list)
     invocation_count: int = 0
@@ -30,14 +33,42 @@ class DownstreamEffectSink:
         return len(self.effects)
 
 
-@dataclass
 class LocalOperationStore:
-    """Local outcome journal, intentionally separate from downstream effects."""
+    """SQLite-backed local outcome journal, separate from downstream effects."""
 
-    outcomes: dict[str, str] = field(default_factory=dict)
+    def __init__(self, path: str | Path) -> None:
+        self.path = str(path)
+        self._db = sqlite3.connect(self.path)
+        self._db.execute(
+            """CREATE TABLE IF NOT EXISTS operations (
+                command_id TEXT PRIMARY KEY,
+                outcome TEXT NOT NULL
+            )"""
+        )
+        self._db.commit()
 
     def record(self, command_id: str, outcome: str) -> None:
-        self.outcomes[command_id] = outcome
+        self._db.execute(
+            """INSERT INTO operations(command_id, outcome) VALUES (?, ?)
+               ON CONFLICT(command_id) DO UPDATE SET outcome=excluded.outcome""",
+            (command_id, outcome),
+        )
+        self._db.commit()
+
+    def outcome(self, command_id: str) -> str | None:
+        row = self._db.execute(
+            "SELECT outcome FROM operations WHERE command_id = ?", (command_id,)
+        ).fetchone()
+        return row[0] if row else None
+
+    def mark_interrupted_unknown(self) -> None:
+        self._db.execute(
+            "UPDATE operations SET outcome='UNKNOWN' WHERE outcome='IN_PROGRESS'"
+        )
+        self._db.commit()
+
+    def close(self) -> None:
+        self._db.close()
 
 
 def execute_with_crash_window(
@@ -52,21 +83,14 @@ def execute_with_crash_window(
     raise SimulatedProcessCrash("crash after downstream effect, before outcome record")
 
 
-def mark_interrupted_operations_unknown(local: LocalOperationStore) -> None:
-    """Recovery transition: persisted IN_PROGRESS operations become UNKNOWN."""
-    for command_id, outcome in tuple(local.outcomes.items()):
-        if outcome == "IN_PROGRESS":
-            local.record(command_id, "UNKNOWN")
-
-
 def recover_before_retry(
     command_id: str,
     payload: bytes,
     sink: DownstreamEffectSink,
     local: LocalOperationStore,
 ) -> str:
-    """Model process restart, mark ambiguity, then reconcile before any retry."""
-    mark_interrupted_operations_unknown(local)
+    """Mark interrupted work UNKNOWN, reconcile downstream, and only then retry."""
+    local.mark_interrupted_unknown()
 
     observed = sink.find(command_id)
     if observed:
@@ -75,15 +99,18 @@ def recover_before_retry(
         local.record(command_id, "SUCCEEDED")
         return "RECONCILED_ALREADY_APPLIED"
 
-    # Only an independently verified absence permits a retry.
+    # This empty result is authoritative only within this in-memory sink model.
+    # A real deployment needs a downstream lookup with equivalent guarantees.
+    local.record(command_id, "RETRY_AUTHORIZED")
     sink.apply(command_id, payload)
     local.record(command_id, "SUCCEEDED")
     return "RETRIED_AFTER_CONFIRMED_ABSENCE"
 
 
-def test_crash_after_effect_leaves_local_outcome_unknown_on_recovery():
+def test_crash_after_effect_recovers_persisted_outcome_as_unknown(tmp_path):
     sink = DownstreamEffectSink()
-    local = LocalOperationStore()
+    journal_path = tmp_path / "operations.sqlite"
+    local = LocalOperationStore(journal_path)
     command_id = "crash-window-001"
 
     try:
@@ -93,24 +120,26 @@ def test_crash_after_effect_leaves_local_outcome_unknown_on_recovery():
     else:
         raise AssertionError("crash injection did not occur")
 
-    # The process stopped with a non-terminal journal entry. Reconstruct a new
-    # store from its persisted snapshot to model a process restart; the sink is
-    # independently retained by the downstream system.
-    persisted_snapshot = dict(local.outcomes)
-    restarted_local = LocalOperationStore(outcomes=persisted_snapshot)
-    assert restarted_local is not local
-    assert restarted_local.outcomes[command_id] == "IN_PROGRESS"
+    # Crash occurred after the sink effect and before terminal local recording.
+    assert local.outcome(command_id) == "IN_PROGRESS"
     assert sink.effect_count == 1
     assert sink.find(command_id) == [(command_id, b"RELAY:ON")]
 
-    # Recovery, not the crashed execution path, maps interrupted work to UNKNOWN.
-    mark_interrupted_operations_unknown(restarted_local)
-    assert restarted_local.outcomes[command_id] == "UNKNOWN"
+    # Close and reopen the actual SQLite file to model process restart.
+    local.close()
+    restarted_local = LocalOperationStore(journal_path)
+    assert restarted_local.outcome(command_id) == "IN_PROGRESS"
+
+    # Recovery changes the persisted non-terminal state to UNKNOWN.
+    restarted_local.mark_interrupted_unknown()
+    assert restarted_local.outcome(command_id) == "UNKNOWN"
+    restarted_local.close()
 
 
-def test_recovery_reconciles_before_retry_and_prevents_duplicate_effect():
+def test_recovery_reconciles_before_retry_and_prevents_duplicate_effect(tmp_path):
     sink = DownstreamEffectSink()
-    local = LocalOperationStore()
+    journal_path = tmp_path / "operations.sqlite"
+    local = LocalOperationStore(journal_path)
     command_id = "crash-window-002"
 
     try:
@@ -119,32 +148,37 @@ def test_recovery_reconciles_before_retry_and_prevents_duplicate_effect():
         pass
 
     assert sink.effect_count == 1
-    assert local.outcomes[command_id] == "IN_PROGRESS"
+    local.close()
 
-    # Recovery marks UNKNOWN, queries downstream, and does not retry an
-    # effect already observed by the independent downstream sink.
-    result = recover_before_retry(command_id, b"RELAY:ON", sink, local)
+    # Reopen the journal as a restarted process, then reconcile before retry.
+    restarted_local = LocalOperationStore(journal_path)
+    assert restarted_local.outcome(command_id) == "IN_PROGRESS"
+    result = recover_before_retry(
+        command_id, b"RELAY:ON", sink, restarted_local
+    )
 
     assert result == "RECONCILED_ALREADY_APPLIED"
-    assert local.outcomes[command_id] == "SUCCEEDED"
+    assert restarted_local.outcome(command_id) == "SUCCEEDED"
     assert sink.effect_count == 1
     assert sink.invocation_count == 1
     assert len(sink.find(command_id)) == 1
+    restarted_local.close()
 
 
-def test_recovery_retries_only_after_downstream_confirms_no_effect():
+def test_recovery_retries_only_after_downstream_confirms_no_effect(tmp_path):
     sink = DownstreamEffectSink()
-    local = LocalOperationStore()
+    local = LocalOperationStore(tmp_path / "operations.sqlite")
     command_id = "not-applied-003"
 
     local.record(command_id, "UNKNOWN")
     result = recover_before_retry(command_id, b"RELAY:ON", sink, local)
 
     assert result == "RETRIED_AFTER_CONFIRMED_ABSENCE"
-    assert local.outcomes[command_id] == "SUCCEEDED"
+    assert local.outcome(command_id) == "SUCCEEDED"
     assert sink.effect_count == 1
     assert sink.invocation_count == 1
     assert sink.find(command_id) == [(command_id, b"RELAY:ON")]
+    local.close()
 
 
 def test_duplicate_downstream_effect_is_visible_to_independent_counter():
