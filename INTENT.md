@@ -49,7 +49,8 @@ A passing CI run proves that the checked tests passed. It does not, by itself, p
 - Working branch: `work/protected-effect-revocation-recovery`
 - Current work is tracked in draft PR #3: revocation at the effect boundary plus crash/reconciliation tests.
 - T3 has been extended to terminate a separate Python child process with `os._exit` after a committed SQLite downstream-model effect and before local outcome finalization; parent recovery reopens two independent SQLite databases.
-- T4 now uses an explicit `APPLIED` / `ABSENT` / `UNKNOWN` downstream reconciliation contract. `UNKNOWN` must block retry; `ABSENT` authorizes retry only if the implementation can establish authoritative, complete lookup across all effect paths.
+- T4 now uses an explicit `APPLIED` / `ABSENT` / `UNKNOWN` downstream reconciliation contract. `APPLIED` and `ABSENT` observations must explicitly be authoritative; non-authoritative observations are treated as `UNKNOWN`. `UNKNOWN` must block retry; `ABSENT` authorizes retry only if the implementation can establish authoritative, complete lookup across all effect paths.
+- T4 also tests duplicate downstream records, repeated recovery after an applied effect, non-authoritative `APPLIED`/`ABSENT` observations, and an apply call that raises after the downstream effect may already have occurred. An ambiguous apply exception records `UNKNOWN` and requires another reconciliation before any further retry.
 - These are software-only process-crash and durable-sink simulations. They do not establish physical actuator behavior or prove a real downstream system can provide authoritative reconciliation.
 - PR #2 (`eabc-effect-correlation-004`) is separate work concerning commit-to-observed-effect correlation; do not silently merge its scope into this task.
 
