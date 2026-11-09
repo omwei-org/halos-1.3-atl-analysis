@@ -71,97 +71,61 @@ class LongRunningActuator(ActuatorAdapter):
 
 
 def test_long_running_operation_revocation_with_events():
-    """Scenario 1: Long-running operation with deterministic threading synchronization.
-
-    This test simulates a long-running operation using threading Barriers
-    to control the exact ordering of:
-    - Operation start
-    - Revocation request
-    - Revocation effective
-    - Subsequent effect attempt
-    - Commit decision
-
-    Evidence boundary: Software callback (GovernedPhysicalPath)
-    Test classification: PARTIALLY TESTED (simulated long-running execution, not physical hardware)
-
-    This test uses deterministic synchronization (Barriers) rather than sleep
-    to establish event ordering, as required.
-    """
+    """A commit already inside the effect boundary serializes before revoke."""
     gie = GIE()
     epoch = gie.grant(0)
 
-    actuator = LongRunningActuator()
+    class BlockingRelay(RecordingRelay):
+        def __init__(self):
+            super().__init__()
+            self.apply_started = threading.Event()
+            self.allow_apply = threading.Event()
+
+        def apply(self, payload: bytes) -> None:
+            self.apply_started.set()
+            assert self.allow_apply.wait(timeout=3), "test did not release actuator"
+            super().apply(payload)
+
+    actuator = BlockingRelay()
     path = GovernedPhysicalPath(gie, env_id=0, actuator=actuator)
-
     execution = PhysicalExecutionObject(0, b"RELAY:ON", epoch)
-
-    # Prepare execution with current authority
     prepared = path.prepare(execution, command_id="test-long-running-001")
-    assert prepared.authority.decision is Decision.ALLOW
-    assert prepared.authority.authority_epoch == epoch
 
-    # Start long-running operation in a separate thread
-    def long_running_operation():
-        # Simulate long-running work
-        # The actuator's apply() method uses barriers for synchronization
-        pass
+    commit_results = []
+    commit_thread = threading.Thread(
+        target=lambda: commit_results.append(path.commit_prepared(prepared))
+    )
+    commit_thread.start()
+    assert actuator.apply_started.wait(timeout=3)
 
-    operation_thread = threading.Thread(target=long_running_operation)
-    operation_thread.start()
+    revoke_started = threading.Event()
+    revoke_completed = threading.Event()
 
-    # Record operation start time
-    actuator.timeline.operation_start = time.time()
+    def revoke():
+        revoke_started.set()
+        gie.revoke(0)
+        revoke_completed.set()
 
-    # Revoke authority while operation is "in-flight"
-    actuator.timeline.revocation_request = time.time()
-    gie.revoke(0)
+    revoke_thread = threading.Thread(target=revoke)
+    revoke_thread.start()
+    assert revoke_started.wait(timeout=3)
+
+    # Revocation cannot become effective between final validation and effect.
+    assert not revoke_completed.wait(timeout=0.05)
+    actuator.allow_apply.set()
+
+    commit_thread.join(timeout=3)
+    revoke_thread.join(timeout=3)
+    assert not commit_thread.is_alive()
+    assert not revoke_thread.is_alive()
+
+    assert len(commit_results) == 1
+    assert commit_results[0].decision is Decision.ALLOW
+    assert commit_results[0].applied is True
+    assert len(actuator.applied_payloads) == 1
+    assert actuator.state is True
+    assert revoke_completed.is_set()
     assert gie.current_epoch(0) == epoch + 1
-
-    # Signal that revocation is effective
-    actuator.timeline.revocation_effective = time.time()
-
-    # Wait for operation thread to complete
-    operation_thread.join()
-
-    # Attempt to commit the prepared execution
-    # GovernedPhysicalPath.commit_prepared() calls gie.revalidate()
-    actuator.timeline.subsequent_effect_attempt = time.time()
-    result = path.commit_prepared(prepared)
-
-    # Record commit decision time
-    actuator.timeline.commit_decision = time.time()
-
-    # Verify the commit is blocked
-    assert result.decision is Decision.BLOCK
-    assert result.reason == "authority_STALE_EPOCH" or result.reason == "revoked"
-    assert result.applied is False
-
-    # Verify no actuator invocation occurred
-    assert len(actuator.applied_payloads) == 0
-    assert actuator.state is False
-
-    # Verify temporal ordering
-    assert actuator.timeline.operation_start < actuator.timeline.revocation_request
-    assert actuator.timeline.revocation_request < actuator.timeline.revocation_effective
-    assert actuator.timeline.revocation_effective < actuator.timeline.subsequent_effect_attempt
-    assert actuator.timeline.subsequent_effect_attempt < actuator.timeline.commit_decision
-
-    # Evidence record:
-    # - Operation started at time T0
-    # - Revocation requested at time T1 > T0
-    # - Revocation effective at time T2 >= T1
-    # - Subsequent effect attempted at time T3 > T2
-    # - Commit decision at time T4 >= T3
-    # - Commit blocked due to stale/revoked authority
-    # - No actuator invocation occurred
-    #
-    # This demonstrates that even when an operation is "in-flight" (simulated
-    # via threading), subsequent effect attempts are blocked if authority has
-    # been revoked.
-    #
-    # IMPORTANT: This is SIMULATED long-running execution, not actual
-    # physical hardware execution. The synchronization is controlled via
-    # threading Barriers, not by actual long-running physical work.
 
 
 def test_prepare_commit_with_revocation_during_callback():
