@@ -263,6 +263,58 @@ def _crash_worker(
     os._exit(exit_code)
 
 
+def _crash_worker_before_downstream_commit(
+    journal_path: str,
+    sink_path: str,
+    command_id: str,
+    payload: bytes,
+    exit_code: int = 74,
+) -> None:
+    """Child process: insert inside an open transaction, then die before commit."""
+    local = LocalOperationStore(journal_path)
+    local.record(command_id, "IN_PROGRESS")
+    sink = SQLiteDownstreamEffectSink(sink_path)
+    sink._db.execute("BEGIN IMMEDIATE")
+    sink._db.execute(
+        "INSERT INTO effects(command_id, payload) VALUES (?, ?)",
+        (command_id, payload),
+    )
+    # Abrupt process death while the write transaction is still uncommitted.
+    # SQLite must roll back the hot journal when the parent reopens the DB.
+    os._exit(exit_code)
+
+
+def execute_with_subprocess_uncommitted_crash(
+    command_id: str,
+    payload: bytes,
+    journal_path: Path,
+    sink_path: Path,
+) -> subprocess.CompletedProcess[str]:
+    """Run a child that dies after INSERT but before downstream COMMIT."""
+    code = (
+        "from poc.test_effect_reconciliation import _crash_worker_before_downstream_commit; "
+        "import sys; "
+        "_crash_worker_before_downstream_commit(sys.argv[1], sys.argv[2], sys.argv[3], "
+        "bytes.fromhex(sys.argv[4]), int(sys.argv[5]))"
+    )
+    return subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            code,
+            str(journal_path),
+            str(sink_path),
+            command_id,
+            payload.hex(),
+            "74",
+        ],
+        cwd=Path(__file__).resolve().parents[1],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+
 def execute_with_subprocess_crash(
     command_id: str,
     payload: bytes,
@@ -399,6 +451,35 @@ def test_recovery_reconciles_before_retry_and_prevents_duplicate_effect(tmp_path
     assert restarted_sink.lookup(command_id).payloads == (b"RELAY:ON",)
     restarted_local.close()
     restarted_sink.close()
+
+
+def test_subprocess_crash_before_downstream_commit_rolls_back_then_retries_once(tmp_path):
+    journal_path = tmp_path / "operations.sqlite"
+    sink_path = tmp_path / "downstream.sqlite"
+    command_id = "subprocess-uncommitted-crash-013"
+
+    child = execute_with_subprocess_uncommitted_crash(
+        command_id, b"RELAY:ON", journal_path, sink_path
+    )
+    assert child.returncode == 74, child.stderr
+
+    # Reopening after the process is dead forces SQLite hot-journal recovery.
+    local = LocalOperationStore(journal_path)
+    sink = SQLiteDownstreamEffectSink(sink_path)
+    assert local.outcome(command_id) == "IN_PROGRESS"
+    absent = sink.lookup(command_id)
+    assert absent.status is ReconciliationStatus.ABSENT
+    assert absent.authoritative
+    assert absent.payloads == ()
+    assert sink.effect_count == 0
+
+    result = recover_before_retry(command_id, b"RELAY:ON", sink, local)
+    assert result == "RETRIED_AFTER_CONFIRMED_ABSENCE"
+    assert local.outcome(command_id) == "SUCCEEDED"
+    assert sink.effect_count == 1
+    assert sink.lookup(command_id).payloads == (b"RELAY:ON",)
+    local.close()
+    sink.close()
 
 
 def test_recovery_retries_only_after_authoritative_absence(tmp_path):
