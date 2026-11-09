@@ -38,6 +38,20 @@ jobs:
             run-002-evidence.json
             run-002-evidence.sha256
 
+      - name: Capture Run 004 effect correlation evidence
+        run: PYTHONPATH=. python scripts/run_run004.py
+
+      - name: Hash Run 004 evidence
+        run: sha256sum run-004-evidence.json > run-004-evidence.sha256
+
+      - name: Upload Run 004 evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: run-004-evidence
+          path: |
+            run-004-evidence.json
+            run-004-evidence.sha256
+
       - name: Upload Run 003 evidence
         uses: actions/upload-artifact@v4
         with:

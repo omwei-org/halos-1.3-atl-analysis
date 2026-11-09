@@ -2,12 +2,14 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from typing import Callable, Protocol
+import hashlib
+import json
 
 from poc.commit_gate import CommitGate, SafetyDecision, SafetyResult
 from poc.execution_identity import digest_bytes
 from poc.gie import CheckResult, Decision, ExecutionEvidence, GIE, make_bytes_execution_evidence
 from poc.halos_adapter import HalosAdapter
-from poc.evidence import CommitEvidence, EvidenceRecorder
+from poc.evidence import CommitEvidence, EffectCorrelationEvidence, EvidenceRecorder
 
 
 class ActuatorAdapter(Protocol):
@@ -200,14 +202,41 @@ class GovernedPhysicalPath:
             raise
 
         if self._evidence is not None:
+            execution_timestamp = EvidenceRecorder.now()
             self._evidence.record(CommitEvidence(
                 "EXECUTION", command_id, evidence.env_id,
                 evidence.action_digest, execution.execution_epoch,
                 decision.authority_epoch, authority.decision.value,
                 authority.reason, safety.decision.value, safety.reason,
                 decision.decision.value, decision.reason,
-                "COMMITTED", True, EvidenceRecorder.now(), "", "",
+                "COMMITTED", True, execution_timestamp, "", "",
             ))
+
+            # The PoC relay exposes a deterministic observation. This record is
+            # deliberately separate from CommitEvidence: it binds the exact
+            # actuator bytes and observed state without claiming physical-world
+            # attestation beyond the adapter's observation boundary.
+            if hasattr(self._actuator, "observe"):
+                observation = self._actuator.observe()
+                observed_at = EvidenceRecorder.now()
+                actuator_payload_digest = digest_bytes(actuator_payload)
+                effect_material = json.dumps(
+                    {
+                        "command_id": command_id,
+                        "env_id": evidence.env_id,
+                        "actuator_payload_digest": actuator_payload_digest,
+                        "observation": observation,
+                    },
+                    sort_keys=True,
+                    separators=(",", ":"),
+                ).encode("utf-8")
+                effect_digest = hashlib.sha256(effect_material).hexdigest()
+                self._evidence.record_effect_correlation(EffectCorrelationEvidence(
+                    "EFFECT_CORRELATION", command_id, evidence.env_id,
+                    evidence.action_digest, actuator_payload_digest,
+                    observation, effect_digest, "OBSERVED", observed_at,
+                    type(self._actuator).__name__, "", "",
+                ))
 
         return PhysicalCommitResult(
             Decision.ALLOW, decision.reason, execution.action_digest,
@@ -256,3 +285,10 @@ class RecordingRelay:
         """Apply an opaque relay command; protocol decoding is outside the core."""
         self.applied_payloads.append(payload)
         self.state = payload == b"RELAY:ON"
+
+    def observe(self) -> dict[str, object]:
+        """Return the relay's deterministic PoC observation state."""
+        return {
+            "applied_payload_digest": digest_bytes(self.applied_payloads[-1]) if self.applied_payloads else None,
+            "state": self.state,
+        }
