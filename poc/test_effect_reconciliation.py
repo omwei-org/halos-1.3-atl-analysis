@@ -46,10 +46,17 @@ def execute_with_crash_window(
     sink: DownstreamEffectSink,
     local: LocalOperationStore,
 ) -> None:
-    """Apply downstream effect, then simulate crash before local result write."""
-    local.outcomes[command_id] = "IN_PROGRESS"
+    """Apply downstream effect, then crash before recording a terminal outcome."""
+    local.record(command_id, "IN_PROGRESS")
     sink.apply(command_id, payload)
     raise SimulatedProcessCrash("crash after downstream effect, before outcome record")
+
+
+def mark_interrupted_operations_unknown(local: LocalOperationStore) -> None:
+    """Recovery transition: persisted IN_PROGRESS operations become UNKNOWN."""
+    for command_id, outcome in tuple(local.outcomes.items()):
+        if outcome == "IN_PROGRESS":
+            local.record(command_id, "UNKNOWN")
 
 
 def recover_before_retry(
@@ -58,12 +65,11 @@ def recover_before_retry(
     sink: DownstreamEffectSink,
     local: LocalOperationStore,
 ) -> str:
-    """Reconcile downstream state before deciding whether retry is safe."""
-    local.outcomes[command_id] = "UNKNOWN"
+    """Model process restart, mark ambiguity, then reconcile before any retry."""
+    mark_interrupted_operations_unknown(local)
 
     observed = sink.find(command_id)
     if observed:
-        # A matching command ID is evidence that the Protected Effect occurred.
         if any(effect_payload != payload for _, effect_payload in observed):
             raise AssertionError("command_id collision: downstream payload mismatch")
         local.record(command_id, "SUCCEEDED")
@@ -75,7 +81,7 @@ def recover_before_retry(
     return "RETRIED_AFTER_CONFIRMED_ABSENCE"
 
 
-def test_crash_after_effect_leaves_local_outcome_unknown():
+def test_crash_after_effect_leaves_local_outcome_unknown_on_recovery():
     sink = DownstreamEffectSink()
     local = LocalOperationStore()
     command_id = "crash-window-001"
@@ -87,11 +93,13 @@ def test_crash_after_effect_leaves_local_outcome_unknown():
     else:
         raise AssertionError("crash injection did not occur")
 
-    # T3: downstream truth and local journal intentionally disagree.
+    # The durable journal has no terminal outcome at the crash boundary.
+    assert local.outcomes[command_id] == "IN_PROGRESS"
     assert sink.effect_count == 1
     assert sink.find(command_id) == [(command_id, b"RELAY:ON")]
-    assert local.outcomes[command_id] == "IN_PROGRESS"
-    local.outcomes[command_id] = "UNKNOWN"
+
+    # Simulate restart recovery: interrupted work becomes UNKNOWN, not FAILED.
+    mark_interrupted_operations_unknown(local)
     assert local.outcomes[command_id] == "UNKNOWN"
 
 
@@ -105,11 +113,11 @@ def test_recovery_reconciles_before_retry_and_prevents_duplicate_effect():
     except SimulatedProcessCrash:
         pass
 
-    # T5: capture independent count before recovery.
     assert sink.effect_count == 1
     assert local.outcomes[command_id] == "IN_PROGRESS"
 
-    # T4: recovery must query downstream before it can retry.
+    # Recovery marks UNKNOWN, queries downstream, and does not retry an
+    # effect already observed by the independent downstream sink.
     result = recover_before_retry(command_id, b"RELAY:ON", sink, local)
 
     assert result == "RECONCILED_ALREADY_APPLIED"
@@ -124,8 +132,7 @@ def test_recovery_retries_only_after_downstream_confirms_no_effect():
     local = LocalOperationStore()
     command_id = "not-applied-003"
 
-    # No downstream effect exists; recovery may safely retry once.
-    local.outcomes[command_id] = "UNKNOWN"
+    local.record(command_id, "UNKNOWN")
     result = recover_before_retry(command_id, b"RELAY:ON", sink, local)
 
     assert result == "RETRIED_AFTER_CONFIRMED_ABSENCE"
