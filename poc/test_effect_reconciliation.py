@@ -14,6 +14,7 @@ import os
 import sqlite3
 import subprocess
 import sys
+import threading
 from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
@@ -36,8 +37,8 @@ class DownstreamObservation:
 class DownstreamReconciliation(Protocol):
     """Contract required before recovery may retry an ambiguous operation.
 
-    Implementations must scope lookup to the stable command/effect identity and
-    return:
+    Implementations must scope lookup and atomic apply to the stable
+    command/effect identity and return:
       * APPLIED only when the effect is authoritatively known to have occurred;
       * ABSENT only when the lookup is authoritative and complete enough to
         establish that no matching effect occurred;
@@ -46,6 +47,13 @@ class DownstreamReconciliation(Protocol):
 
     APPLIED and ABSENT must carry authoritative=True. A non-authoritative
     observation is treated as UNKNOWN regardless of its claimed status.
+
+    A prior ABSENT lookup is not itself a concurrency-safe authorization to
+    apply. apply_if_absent must atomically serialize the absence check with the
+    Protected Effect for this command_id, or provide an equivalent downstream
+    conditional-commit guarantee. A plain lookup followed by an unconstrained
+    apply has a TOCTOU race and is not sufficient. This is a required adapter
+    contract, not a claim that a physical actuator currently provides it.
 
     ABSENT must not be inferred from a timeout, transport error, stale replica,
     incomplete query, or missing telemetry. The lookup must cover every path by
@@ -56,6 +64,12 @@ class DownstreamReconciliation(Protocol):
 
     def lookup(self, command_id: str) -> DownstreamObservation: ...
 
+    def apply_if_absent(
+        self, command_id: str, payload: bytes
+    ) -> DownstreamObservation:
+        """Atomically apply once for this command_id at the effect boundary."""
+        ...
+
 
 @dataclass
 class DownstreamEffectSink:
@@ -63,10 +77,29 @@ class DownstreamEffectSink:
 
     effects: list[tuple[str, bytes]] = field(default_factory=list)
     invocation_count: int = 0
+    _lock: threading.Lock = field(default_factory=threading.Lock, repr=False)
 
     def apply(self, command_id: str, payload: bytes) -> None:
-        self.invocation_count += 1
-        self.effects.append((command_id, payload))
+        # Deliberately non-idempotent primitive retained for negative controls.
+        with self._lock:
+            self.invocation_count += 1
+            self.effects.append((command_id, payload))
+
+    def apply_if_absent(
+        self, command_id: str, payload: bytes
+    ) -> DownstreamObservation:
+        # The check and effect are one atomic critical section in this model.
+        with self._lock:
+            found = self.find(command_id)
+            if not found:
+                self.invocation_count += 1
+                self.effects.append((command_id, payload))
+                found = [payload]
+            return DownstreamObservation(
+                ReconciliationStatus.APPLIED,
+                tuple(found),
+                authoritative=True,
+            )
 
     def find(self, command_id: str) -> list[tuple[str, bytes]]:
         return [effect for effect in self.effects if effect[0] == command_id]
@@ -100,11 +133,41 @@ class SQLiteDownstreamEffectSink:
         self._db.commit()
 
     def apply(self, command_id: str, payload: bytes) -> None:
+        # Deliberately non-idempotent primitive retained for duplicate controls.
         self._db.execute(
             "INSERT INTO effects(command_id, payload) VALUES (?, ?)",
             (command_id, payload),
         )
         self._db.commit()
+
+    def apply_if_absent(
+        self, command_id: str, payload: bytes
+    ) -> DownstreamObservation:
+        # BEGIN IMMEDIATE serializes competing writers before check-and-effect.
+        self._db.execute("BEGIN IMMEDIATE")
+        try:
+            rows = self._db.execute(
+                "SELECT payload FROM effects WHERE command_id = ? ORDER BY effect_id",
+                (command_id,),
+            ).fetchall()
+            if rows:
+                self._db.commit()
+                return DownstreamObservation(
+                    ReconciliationStatus.APPLIED,
+                    tuple(bytes(row[0]) for row in rows),
+                    authoritative=True,
+                )
+            self._db.execute(
+                "INSERT INTO effects(command_id, payload) VALUES (?, ?)",
+                (command_id, payload),
+            )
+            self._db.commit()
+            return DownstreamObservation(
+                ReconciliationStatus.APPLIED, (payload,), authoritative=True
+            )
+        except Exception:
+            self._db.rollback()
+            raise
 
     def lookup(self, command_id: str) -> DownstreamObservation:
         rows = self._db.execute(
@@ -242,15 +305,24 @@ def recover_before_retry(
     if observed.status is not ReconciliationStatus.ABSENT:
         raise AssertionError(f"unsupported reconciliation status: {observed.status}")
 
-    # ABSENT authorizes retry only under the explicit lookup contract above.
+    # ABSENT permits attempting the downstream atomic conditional operation;
+    # it does not authorize a separate, raceable lookup-then-apply sequence.
     local.record(command_id, "RETRY_AUTHORIZED")
     try:
-        sink.apply(command_id, payload)  # type: ignore[attr-defined]
+        applied = sink.apply_if_absent(command_id, payload)
     except Exception:
-        # The apply call itself may have crossed the effect boundary before failing.
-        # Never interpret its exception as proof of absence; reconcile again.
+        # The operation may have crossed the effect boundary before failing.
         local.record(command_id, "UNKNOWN")
         return "RETRY_OUTCOME_UNKNOWN"
+
+    if (
+        applied.status is not ReconciliationStatus.APPLIED
+        or not applied.authoritative
+        or applied.payloads != (payload,)
+    ):
+        local.record(command_id, "UNKNOWN")
+        return "RETRY_OUTCOME_UNKNOWN"
+
     local.record(command_id, "SUCCEEDED")
     return "RETRIED_AFTER_CONFIRMED_ABSENCE"
 
@@ -369,8 +441,13 @@ def test_non_authoritative_absence_never_authorizes_retry(tmp_path):
                 ReconciliationStatus.ABSENT, authoritative=False
             )
 
-        def apply(self, command_id: str, payload: bytes) -> None:
+        def apply_if_absent(
+            self, command_id: str, payload: bytes
+        ) -> DownstreamObservation:
             self.apply_calls += 1
+            return DownstreamObservation(
+                ReconciliationStatus.APPLIED, (payload,), authoritative=True
+            )
 
     sink = StaleReplica()
     local = LocalOperationStore(tmp_path / "operations.sqlite")
@@ -394,7 +471,9 @@ def test_non_authoritative_applied_observation_does_not_finalize_success(tmp_pat
                 authoritative=False,
             )
 
-        def apply(self, command_id: str, payload: bytes) -> None:
+        def apply_if_absent(
+            self, command_id: str, payload: bytes
+        ) -> DownstreamObservation:
             raise AssertionError("non-authoritative observation must not trigger retry")
 
     local = LocalOperationStore(tmp_path / "operations.sqlite")
@@ -463,9 +542,12 @@ def test_retry_exception_after_effect_is_reconciled_before_any_further_retry(tmp
                 authoritative=True,
             )
 
-        def apply(self, command_id: str, payload: bytes) -> None:
+        def apply_if_absent(
+            self, command_id: str, payload: bytes
+        ) -> DownstreamObservation:
             self.invocation_count += 1
-            self.effects.append((command_id, payload))
+            if not any(key == command_id for key, _ in self.effects):
+                self.effects.append((command_id, payload))
             raise RuntimeError("transport failed after downstream effect")
 
     sink = ApplyThenRaise()
@@ -485,3 +567,41 @@ def test_retry_exception_after_effect_is_reconciled_before_any_further_retry(tmp
     assert len(sink.effects) == 1
     assert sink.invocation_count == 1
     local.close()
+
+
+
+def test_concurrent_recovery_uses_atomic_downstream_apply_once(tmp_path):
+    sink = DownstreamEffectSink()
+    local_a = LocalOperationStore(tmp_path / "operations-a.sqlite")
+    local_b = LocalOperationStore(tmp_path / "operations-b.sqlite")
+    command_id = "concurrent-recovery-011"
+    local_a.record(command_id, "IN_PROGRESS")
+    local_b.record(command_id, "IN_PROGRESS")
+    barrier = threading.Barrier(3)
+    results = []
+
+    def recover(local):
+        barrier.wait()
+        results.append(
+            recover_before_retry(command_id, b"RELAY:ON", sink, local)
+        )
+
+    first = threading.Thread(target=recover, args=(local_a,))
+    second = threading.Thread(target=recover, args=(local_b,))
+    first.start()
+    second.start()
+    barrier.wait()
+    first.join(timeout=5)
+    second.join(timeout=5)
+
+    assert not first.is_alive()
+    assert not second.is_alive()
+    assert sorted(results) == [
+        "RECONCILED_ALREADY_APPLIED",
+        "RETRIED_AFTER_CONFIRMED_ABSENCE",
+    ]
+    assert sink.effect_count == 1
+    assert sink.invocation_count == 1
+    assert sink.find(command_id) == [(command_id, b"RELAY:ON")]
+    local_a.close()
+    local_b.close()
