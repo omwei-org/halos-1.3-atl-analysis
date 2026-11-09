@@ -91,15 +91,19 @@ class DownstreamEffectSink:
     ) -> DownstreamObservation:
         # The check and effect are one atomic critical section in this model.
         with self._lock:
-            found = self.find(command_id)
-            created = not found
+            existing = self.find(command_id)
+            created = not existing
             if created:
                 self.invocation_count += 1
                 self.effects.append((command_id, payload))
-                found = [payload]
+                payloads = (payload,)
+            else:
+                # find() returns (command_id, payload) records; the
+                # reconciliation contract exposes payload bytes only.
+                payloads = tuple(effect_payload for _, effect_payload in existing)
             return DownstreamObservation(
                 ReconciliationStatus.APPLIED,
-                tuple(found),
+                payloads,
                 authoritative=True,
                 created=created,
             )
