@@ -585,30 +585,37 @@ def test_retry_exception_after_effect_is_reconciled_before_any_further_retry(tmp
 
 def test_concurrent_recovery_uses_atomic_downstream_apply_once(tmp_path):
     sink = DownstreamEffectSink()
-    local_a = LocalOperationStore(tmp_path / "operations-a.sqlite")
-    local_b = LocalOperationStore(tmp_path / "operations-b.sqlite")
     command_id = "concurrent-recovery-011"
-    local_a.record(command_id, "IN_PROGRESS")
-    local_b.record(command_id, "IN_PROGRESS")
     barrier = threading.Barrier(3)
     results = []
+    errors = []
 
-    def recover(local):
-        barrier.wait()
-        results.append(
-            recover_before_retry(command_id, b"RELAY:ON", sink, local)
-        )
+    def recover(worker_id: str):
+        # Each worker owns its SQLite connection; sqlite3 connections are
+        # thread-affine by default and must not be shared across workers.
+        local = LocalOperationStore(tmp_path / f"operations-{worker_id}.sqlite")
+        try:
+            local.record(command_id, "IN_PROGRESS")
+            barrier.wait(timeout=5)
+            results.append(
+                recover_before_retry(command_id, b"RELAY:ON", sink, local)
+            )
+        except Exception as exc:
+            errors.append(exc)
+        finally:
+            local.close()
 
-    first = threading.Thread(target=recover, args=(local_a,))
-    second = threading.Thread(target=recover, args=(local_b,))
+    first = threading.Thread(target=recover, args=("a",))
+    second = threading.Thread(target=recover, args=("b",))
     first.start()
     second.start()
-    barrier.wait()
+    barrier.wait(timeout=5)
     first.join(timeout=5)
     second.join(timeout=5)
 
     assert not first.is_alive()
     assert not second.is_alive()
+    assert not errors
     assert sorted(results) == [
         "RECONCILED_ALREADY_APPLIED",
         "RETRIED_AFTER_CONFIRMED_ABSENCE",
@@ -616,8 +623,12 @@ def test_concurrent_recovery_uses_atomic_downstream_apply_once(tmp_path):
     assert sink.effect_count == 1
     assert sink.invocation_count == 1
     assert sink.find(command_id) == [(command_id, b"RELAY:ON")]
-    local_a.close()
-    local_b.close()
+
+    # Verify each independently owned journal after workers have closed it.
+    for worker_id in ("a", "b"):
+        local = LocalOperationStore(tmp_path / f"operations-{worker_id}.sqlite")
+        assert local.outcome(command_id) == "SUCCEEDED"
+        local.close()
 
 
 
