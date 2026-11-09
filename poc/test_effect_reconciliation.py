@@ -1,8 +1,9 @@
 """Crash/reconciliation tests with independent downstream effect accounting.
 
-T3 uses a real child-process termination (os._exit) after a separately committed
-SQLite downstream effect and before the local outcome is finalized. Both SQLite
-databases are software models; neither is evidence about a physical actuator.
+T3 uses a real child-process termination (os._exit) immediately after the
+SQLite downstream apply_if_absent transaction commits and before the local
+outcome is finalized. Both SQLite databases are software models; neither is
+evidence about a physical actuator.
 
 T4 makes the downstream reconciliation contract explicit. A retry is permitted
 only after an authoritative ABSENT observation; APPLIED suppresses retry and
@@ -252,8 +253,12 @@ def _crash_worker(
     local = LocalOperationStore(journal_path)
     local.record(command_id, "IN_PROGRESS")
     sink = SQLiteDownstreamEffectSink(sink_path)
-    sink.apply(command_id, payload)
-    # Deliberately bypass finally blocks, Python teardown, and normal process exit.
+    applied = sink.apply_if_absent(command_id, payload)
+    if not applied.authoritative or not applied.created:
+        raise AssertionError("crash worker expected to create exactly one effect")
+    # Deliberately crash after the downstream conditional commit has returned,
+    # but before the caller can persist a terminal local outcome.
+    # Bypass finally blocks, Python teardown, and normal process exit.
     # The OS closes descriptors; SQLite's committed transactions must survive.
     os._exit(exit_code)
 
