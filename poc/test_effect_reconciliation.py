@@ -78,7 +78,7 @@ class DownstreamEffectSink:
 
     effects: list[tuple[str, bytes]] = field(default_factory=list)
     invocation_count: int = 0
-    _lock: threading.Lock = field(default_factory=threading.Lock, repr=False)
+    _lock: threading.RLock = field(default_factory=threading.RLock, repr=False)
 
     def apply(self, command_id: str, payload: bytes) -> None:
         # Deliberately non-idempotent primitive retained for negative controls.
@@ -105,11 +105,13 @@ class DownstreamEffectSink:
             )
 
     def find(self, command_id: str) -> list[tuple[str, bytes]]:
-        return [effect for effect in self.effects if effect[0] == command_id]
+        with self._lock:
+            return [effect for effect in self.effects if effect[0] == command_id]
 
     def lookup(self, command_id: str) -> DownstreamObservation:
-        found = self.find(command_id)
-        return DownstreamObservation(
+        with self._lock:
+            found = self.find(command_id)
+            return DownstreamObservation(
             ReconciliationStatus.APPLIED if found else ReconciliationStatus.ABSENT,
             tuple(payload for _, payload in found),
             authoritative=True,
@@ -616,3 +618,48 @@ def test_concurrent_recovery_uses_atomic_downstream_apply_once(tmp_path):
     assert sink.find(command_id) == [(command_id, b"RELAY:ON")]
     local_a.close()
     local_b.close()
+
+
+
+def test_concurrent_sqlite_recovery_serializes_separate_connections(tmp_path):
+    sink_path = tmp_path / "downstream.sqlite"
+    command_id = "sqlite-concurrent-recovery-012"
+    barrier = threading.Barrier(3)
+    results = []
+    errors = []
+
+    def recover(worker_id: str):
+        local = LocalOperationStore(tmp_path / f"operations-{worker_id}.sqlite")
+        sink = SQLiteDownstreamEffectSink(sink_path)
+        local.record(command_id, "IN_PROGRESS")
+        barrier.wait()
+        try:
+            results.append(
+                recover_before_retry(command_id, b"RELAY:ON", sink, local)
+            )
+        except Exception as exc:
+            errors.append(exc)
+        finally:
+            sink.close()
+            local.close()
+
+    first = threading.Thread(target=recover, args=("a",))
+    second = threading.Thread(target=recover, args=("b",))
+    first.start()
+    second.start()
+    barrier.wait()
+    first.join(timeout=10)
+    second.join(timeout=10)
+
+    assert not first.is_alive()
+    assert not second.is_alive()
+    assert not errors
+    assert sorted(results) == [
+        "RECONCILED_ALREADY_APPLIED",
+        "RETRIED_AFTER_CONFIRMED_ABSENCE",
+    ]
+
+    observer = SQLiteDownstreamEffectSink(sink_path)
+    assert observer.effect_count == 1
+    assert observer.lookup(command_id).payloads == (b"RELAY:ON",)
+    observer.close()
